@@ -221,6 +221,12 @@ class PointSequential(PointModule):
             # Spconv module
             elif spconv.modules.is_spconv_module(module):
                 if isinstance(input, Point):
+                    print("============")
+                    print(input.sparse_conv_feat.spatial_shape)
+                    print(torch.isnan(input.sparse_conv_feat.features).any())
+                    print(input.sparse_conv_feat.indices)
+                    print(input.sparse_conv_feat.batch_size)
+                    print("============")
                     input.sparse_conv_feat = module(input.sparse_conv_feat)
                     
                     input.feat = input.sparse_conv_feat.features
