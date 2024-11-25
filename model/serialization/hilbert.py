@@ -103,6 +103,7 @@ def encode(locs, num_dims, num_bits):
             which each dimension runs from 0 to 2**num_bits-1.  The shape can
             be arbitrary, as long as the last dimension of the same has size
             num_dims.
+            (gird coords)
 
      num_dims - The dimensionality of the hypercube. Integer.
 
@@ -116,7 +117,10 @@ def encode(locs, num_dims, num_bits):
 
     # Keep around the original shape for later.
     orig_shape = locs.shape
+    # for s in locs:
+        # print(s)
     bitpack_mask = 1 << torch.arange(0, 8).to(locs.device)
+    # print("bitpack mask :", bitpack_mask)
     bitpack_mask_rev = bitpack_mask.flip(-1)
 
     if orig_shape[-1] != num_dims:
@@ -150,7 +154,6 @@ def encode(locs, num_dims, num_bits):
         .byte()
         .flatten(-2, -1)[..., -num_bits:]
     )
-
     # Run the decoding process the other way.
     # Iterate forwards through the bits.
     for bit in range(0, num_bits):

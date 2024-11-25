@@ -1,16 +1,15 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from chamferdist import ChamferDistance
 from torch.utils.data import Dataset, DataLoader
 from glob import glob
 import numpy as np
 
-import sys,os
+import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # from model.PTv3 import Point
-from model.LidarUpsample import Lidar4US,Point
+from model.LidarUpsample import Lidar4US, Point
 
 
 def load_kitti_bin(file_path):
@@ -51,6 +50,28 @@ def kitti_to_dict(file_path, grid_size=0.05, batch_id=0):
     }
     return data_dict
 
+def kitti_to_dict(file_path, grid_size=0.05, batch_id=0):
+    raw_data = load_kitti_bin(file_path)
+    coords = raw_data[:, :3]  # x, y, z
+    intensity = raw_data[:, 3:4]  # intensity as a feature
+
+    # Combine coords and intensity as features
+    features = torch.cat([
+        torch.tensor(coords, dtype=torch.float32),
+        torch.tensor(intensity, dtype=torch.float32)
+    ], dim=1)
+
+    batch_tensor = torch.full((features.shape[0],), batch_id, dtype=torch.int64)
+
+    # Create Point object
+    data_dict = {
+        "coord": features[:, :3].to("cuda"),  # Coordinates (x, y, z)
+        "feat": features.to("cuda"),  # Coordinates (x, y, z) + intensity
+        "batch": batch_tensor.to("cuda"),  # Batch IDs
+        "grid_size" : torch.tensor(0.01).to("cuda")
+    }
+    return data_dict
+
 
 class PointCloudDataset(Dataset):
     def __init__(self, file_paths, grid_size=0.05):
@@ -66,49 +87,56 @@ class PointCloudDataset(Dataset):
         return kitti_to_dict(file_path, grid_size=self.grid_size, batch_id=batch_id)
 
 
-class ChamferLoss(nn.Module):
+class MAELoss(nn.Module):
     def __init__(self):
         super().__init__()
-        self.chamfer_dist = ChamferDistance()
 
     def forward(self, pred_points, gt_points):
         """
-        Compute Chamfer Distance Loss.
+        Compute Mean Absolute Error (MAE) Loss.
         :param pred_points: Predicted upsampled points [B, N, 3]
         :param gt_points: Ground truth points [B, M, 3]
-        :return: Chamfer Distance Loss
+        :return: MAE Loss
         """
-        dist1, dist2 = self.chamfer_dist(pred_points, gt_points)
-        return torch.mean(dist1) + torch.mean(dist2)
+        gt.serialization(orders)
+        pred.serialization(orders)
+
+        # Compute absolute difference between predicted and ground truth
+        loss = torch.abs(pred_points - gt_points)
+        # Return the mean over all the points
+        return torch.mean(loss)
 
 
 ## !!gt and train has the same filename!!
-train_file_paths = glob("/home/junseo/datasets/sparse_pointclouds/train/*.bin", recursive=True)
-gt_file_paths = glob("/home/junseo/datasets/sparse_pointclouds/GT/*.bin")
+train_file_paths = glob("/home/server01/js_ws/dataset/sparse_pointclouds_kitti/train/*.bin", recursive=True)
+gt_file_paths = glob("/home/server01/js_ws/dataset/sparse_pointclouds_kitti/GT/*.bin")
 
 train_dataset = PointCloudDataset(train_file_paths)
 gt_dataset = PointCloudDataset(gt_file_paths)
 
 model = Lidar4US(
-    in_channels=3,
+    in_channels=4,  #coord + intensity
     drop_path=0.3,
-    block_depth=(2, 2, 2, 6, 2),
-    enc_channels=(32, 64, 128, 256, 512),
-    enc_n_heads=(2, 4, 8, 16, 32),
-    enc_patch_size=(1024, 1024, 1024, 1024, 1024),
+    block_depth=(2, 2, 2, 6, 6, 2),
+    enc_channels=(32, 64, 128, 256, 512, 1024),
+    enc_n_heads=(2, 4, 8, 16, 32, 64),
+    enc_patch_size=(1024, 1024, 1024, 1024, 1024, 1024),
     qkv_bias=True,
     qk_scale=None,
     attn_drop=0.0,
     proj_drop=0.0,
     mlp_ratio=4,
-    stride=(2, 2, 2, 2),
-    dec_depths=(2, 2, 2, 2),
-    dec_n_head=(4, 4, 8, 16),
-    dec_patch_size=(1024, 1024, 1024, 1024),
-    dec_channels=(64,64,128,256)
+    stride=(2, 2, 2, 2, 2),
+    dec_depths=(2, 2, 2, 2, 2),
+    dec_n_head=(4, 4, 8, 16, 32),
+    dec_patch_size=(1024, 1024, 1024, 1024, 1024, ),
+    dec_channels=(32, 64, 128, 256, 512),
+    out_channel = 3,
+    train_decoder=True,
+    order=("z", "z-trans", "hilbert", "hilbert-trans")
 )
 
-loss_fn = ChamferLoss()
+loss_fn = MAELoss()
 optimizer = optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
 
 num_epochs = 10
@@ -117,16 +145,37 @@ device = torch.device("cuda")
 model.to(device)
 loss_fn.to(device)
 
+## TEST 1 just make x30 size output(11/22)
+
+# serialized_gt = []
+orders=("z", "z-trans", "hilbert", "hilbert-trans")
+
+# for gt in gt_dataset:
+#     p_gt = Point(gt)
+#     tmp = []
+#     p_gt.serialization(orders,shuffle_orders=False)
+#     serialized_gt.append(p_gt)
+# p_gt = Point(gt_dataset[0])
+# p_gt.serialization(orders,shuffle_orders=False)
+
+# print("raw: ")
+# print(len(gt_dataset[0]["feat"]))
+# print("code :")
+# print(p_gt.serialized_code[0])
+# print("order :")
+# print(max(p_gt.serialized_order[0]))
+
+# sys.exit()
 
 for epoch in range(num_epochs):
     model.train()
     total_loss = 0
+
     for i in range(len(train_dataset)):
         pred = model(train_dataset[i])
-        gt = gt_dataset[i]
+        gt = Point(gt_dataset[i])
 
-        loss = loss_fn(pred,gt)
-
+        loss = loss_fn(pred, gt)
         optimizer.zero_grad()
         loss.backward()
 

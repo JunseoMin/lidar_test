@@ -17,6 +17,8 @@ import sys
 import math
 import torch_scatter
 
+from einops import rearrange
+
 #PTv3 (not modified) ---------------------------------
 
 @torch.inference_mode()
@@ -221,12 +223,6 @@ class PointSequential(PointModule):
             # Spconv module
             elif spconv.modules.is_spconv_module(module):
                 if isinstance(input, Point):
-                    print("============")
-                    print(input.sparse_conv_feat.spatial_shape)
-                    print(torch.isnan(input.sparse_conv_feat.features).any())
-                    print(input.sparse_conv_feat.indices)
-                    print(input.sparse_conv_feat.batch_size)
-                    print("============")
                     input.sparse_conv_feat = module(input.sparse_conv_feat)
                     
                     input.feat = input.sparse_conv_feat.features
@@ -446,7 +442,6 @@ class Embedding(PointModule):
         super().__init__()
         self.in_channels = in_channels
         self.embed_channels = embed_channels
-        print(f"Expected in_channels (EMBEDDING): {self.in_channels}")
 
         # TODO: check remove spconv
         # TODO: Lidar4US - do i have to...?(11/20)
@@ -482,7 +477,7 @@ class MLP(nn.Module):
 
         self.l1 = nn.Linear(in_channels,hidden_channels)
         self.l2 = nn.Linear(hidden_channels,out_channels)
-        self.activation = nn.GELU
+        self.activation = nn.GELU()
         self.dropout = nn.Dropout(dropout)
 
     def forward(self,x):
@@ -532,7 +527,7 @@ class CloseSerializedAttn(PointModule):
     @torch.no_grad()
     def get_rel_pos(self, point, order):
         K = self.patch_size
-        rel_pos_key = f"rel_pos_{self.order_index}"
+        rel_pos_key = f"rel_pos_{self.order_idx}"
         if rel_pos_key not in point.keys():
             grid_coord = point.grid_coord[order]
             grid_coord = grid_coord.reshape(-1, K, 3)
@@ -608,16 +603,20 @@ class CloseSerializedAttn(PointModule):
                 offset2bincount(point.offset).min().tolist(), self.patch_size_max
             )
         
-        H = self.num_heads
+        H = self.n_heads
         K = self.patch_size
         C = self.channels
 
         pad, unpad, cu_seqlens = self.get_padding_and_inverse(point)
-
-        order = point.serialized_order[self.order_index][pad]
-        inverse = unpad[point.serialized_inverse[self.order_index]]
+        order = point.serialized_order[self.order_idx][pad]
+        # print("attndebug ===========")
+        # print(point.serialized_order[self.order_idx])
+        # print(order)
+        # print("attndebug ===========")
+        inverse = unpad[point.serialized_inverse[self.order_idx]]
 
         qkv = self.qkv(point.feat)[order]
+        # print(qkv)
 
         q, k, v = (
                 qkv.reshape(-1, K, 3, H, C // H).permute(2, 0, 3, 1, 4).unbind(dim=0)
@@ -626,8 +625,7 @@ class CloseSerializedAttn(PointModule):
         relative_positions = self.get_rel_pos(point, order)
         distance_weights = self.calculate_distance_weights(relative_positions)
         distance_weights = torch.log(distance_weights)
-        print(distance_weights.item())
-        attn = attn + distance_weights
+        # attn = attn + distance_weights
 
         attn = self.softmax(attn)
         attn = self.attn_drop(attn).to(qkv.dtype)
@@ -660,7 +658,7 @@ class Block(PointModule):
             spconv.SubMConv3d(
                 channels,
                 channels,
-                kernel_size=3,
+                kernel_size=5,
                 bias=True,
                 indice_key=cpe_indice_key,
             ),
@@ -694,39 +692,26 @@ class Block(PointModule):
         )
 
     def forward(self, point: Point):
-        print("Block start!!")
         shortcut = point.feat
-        print("shortcut saved!")
-        # print("Before SubMConv3d:", point)
-        print(f"Features: {point.feat.shape}")
-        print(f"Coordinates: {point.coord.shape}")
-        print(f"Features NaN check: {torch.isnan(point.feat).any()}")
-        print(f"Coordinates range: {point.coord.min()}, {point.coord.max()}")
         point = self.xcpe(point)
-        print("xcpe passed")
+
         point.feat = shortcut + point.feat
         shortcut = point.feat
-        print("residual passed")
 
         point = self.norm1(point)
-        print("norm1 passed")
         point = self.drop_path(self.attn(point))
-        print("attn passed")
         point.feat = shortcut + point.feat
-        print("residual passed")
 
         shortcut = point.feat
         point = self.norm2(point)
-        print("norm2 passed")
         point = self.drop_path(self.mlp(point))
-        print("mlp")
         point.feat = shortcut + point.feat
-        print("residual passed")
 
         point.sparse_conv_feat = point.sparse_conv_feat.replace_feature(point.feat)
-        print("sparse conv passed")
+        print("Block output shape:", point.feat.shape)
         return point
 
+    
 class Lidar4US(PointModule):
     def __init__(self, 
                  in_channels,
@@ -745,12 +730,15 @@ class Lidar4US(PointModule):
                  dec_n_head,
                  dec_patch_size,
                  dec_channels,
+                 train_decoder = False,
                  order = ("z", "z-trans", "hilbert", "hilbert-trans"),
+                 out_channel=3
                 ):
         super().__init__()
         n_stage = len(block_depth)
         self.order = order
         self.encoder = PointSequential()
+        self.train_decoder = train_decoder
         self.generate_encoder(drop_path, 
                               n_stage,
                               block_depth, 
@@ -787,8 +775,6 @@ class Lidar4US(PointModule):
             act_layer=nn.GELU,
         )
 
-
-
     def generate_encoder(self, 
                          drop_path, 
                          n_stage,
@@ -802,6 +788,7 @@ class Lidar4US(PointModule):
                          proj_drop, 
                          mlp_ratio, 
                          stride:tuple ):
+        
         enc_drop_path = [x.item() for x in torch.linspace(0, drop_path, sum(block_depth))]
         for stage in range(n_stage):
             _enc_drop_path = enc_drop_path[sum(block_depth[:stage]):sum(block_depth[:stage + 1])]
@@ -922,16 +909,18 @@ class Lidar4US(PointModule):
             self.decoder.add(module=dec, name=f"dec{stage}")
 
     def forward(self, data_dict):
-        
         point = Point(data_dict)
-        point.serialization()
+
+        point.serialization(self.order,shuffle_orders=True)
         point.sparsify()
 
         point = self.embedding(point)
 
-        point = self.encoder(point)
+        descriptor = self.encoder(point)
+        print("encoded shape:", point.feat.shape)
 
-        if not self.upsample:
-            point = self.decoder(point)
+        if not self.train_decoder:
+            point = self.decoder(descriptor)
+            print("decoded shape:",point.feat.shape)
 
-        return point
+        return descriptor
