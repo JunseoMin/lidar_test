@@ -6,31 +6,9 @@ import random
 import os
 from multiprocessing import Pool
 
-import hashlib
 
 def load_kitti_bin(file_path):
     return np.fromfile(file_path, dtype=np.float32).reshape(-1, 4)
-
-
-def kitti_to_point(file_path, grid_size=0.05, batch_id=0):
-    raw_data = load_kitti_bin(file_path)
-    coords = raw_data[:, :3]  # x, y, z
-    intensity = raw_data[:, 3:4]  # intensity
-
-    features = torch.cat([
-        torch.tensor(coords, dtype=torch.float32),
-        torch.tensor(intensity, dtype=torch.float32)
-    ], dim=1)
-
-    batch_tensor = torch.full((features.shape[0],), batch_id, dtype=torch.int64)
-
-    return Point({
-        "coord": features[:, :3],
-        "feat": features,
-        "batch": batch_tensor,
-        "grid_size": torch.tensor([grid_size]),
-    })
-
 
 def generate_sparse_point_cloud(points, sparse_factor=1):
     num_points = points.shape[0]
@@ -53,13 +31,13 @@ def generate_unique_filename(file_path, output_dir, idx):
     :return: Unique file path
     """
     base_name = os.path.basename(file_path)
-    unique_name = f"{os.path.splitext(base_name)[0]}_{idx}.bin"
+    unique_name = f"{idx}.bin"
     return os.path.join(output_dir, unique_name)
 
 
 def process_file(file_path, train_dir, gt_dir, sparse_factor, idx, grid_size=0.05, batch_id=0):
-    point = kitti_to_point(file_path, grid_size=grid_size, batch_id=batch_id)
-    raw_points = point["feat"].numpy()
+    raw_points = load_kitti_bin(file_path)
+    # raw_points = point["feat"].numpy()
 
     gt_output_path = generate_unique_filename(file_path, gt_dir, idx)
     save_point_cloud_to_bin(raw_points, gt_output_path)
@@ -78,7 +56,7 @@ def process_files_in_parallel(file_paths, train_dir, gt_dir, sparse_factor, num_
 
 
 file_paths = glob("/home/server01/js_ws/dataset/**/*.bin", recursive=True)
-train_ratio = 0.7
+train_ratio = 0.9
 num_train = int(len(file_paths) * train_ratio)
 random.shuffle(file_paths)
 
@@ -88,8 +66,19 @@ test_files = file_paths[num_train:]
 train_output_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/train"
 test_output_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/test"
 gt_output_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/GT"
+gt_test_output_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/GT_test"
 
 sparse_factor = 16
 
-process_files_in_parallel(train_files, train_output_dir, gt_output_dir, sparse_factor, num_workers=20)
-process_files_in_parallel(test_files, test_output_dir, gt_output_dir, sparse_factor, num_workers=20)
+def process(file_paths, train_dir, gt_dir, sparse_factor):
+    for i in range(len(file_paths)):
+        process_file(file_path=file_paths[i], train_dir=train_dir, gt_dir= gt_dir, sparse_factor=sparse_factor, idx=i)
+
+        if i == len(file_paths) -1:
+            print(f"process finished! num dataset: {i}")
+    
+process(train_files,train_output_dir,gt_output_dir,sparse_factor)
+process(test_files,test_output_dir,gt_test_output_dir,sparse_factor)
+
+# process_files_in_parallel(train_files, train_output_dir, gt_output_dir, sparse_factor, num_workers=20)
+# process_files_in_parallel(test_files, test_output_dir, gt_output_dir, sparse_factor, num_workers=20)
