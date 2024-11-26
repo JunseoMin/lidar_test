@@ -3,3 +3,5 @@
 **/.vscode
 **/.*pyc
 **/*.pth
+evaluate.py
+test.py
