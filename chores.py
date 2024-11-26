@@ -1,31 +1,14 @@
 import torch
-import torch.nn as nn
 
-class ExpandMLP(nn.Module):
-    def __init__(self, input_dim, output_dim, expand_factor):
-        super().__init__()
-        self.expand_factor = expand_factor  # 30
-        self.mlp = nn.Sequential(
-            nn.Linear(input_dim, output_dim * expand_factor),  # C -> 30 * C/30
-            nn.ReLU()
-        )
+# 데이터의 길이
+num_points = 16  # 예: 총 데이터 개수
+segments = 3     # 구간 수
 
-    def forward(self, x):
-        # x의 크기: (N, C)
-        expanded = self.mlp(x)  # (N, 30 * C/30)
-        expanded = expanded.view(-1, self.expand_factor, expanded.size(-1) // self.expand_factor)
-        # 크기 변환: (N, 30, C/30)
-        expanded = expanded.view(-1, expanded.size(-1))  # (30N, C/30)
-        return expanded
+# 각 구간의 데이터 개수 계산
+points_per_segment = (num_points + segments - 1) // segments  # 올림 처리
 
-# 예제: 입력 및 출력
-N, C = 2, 64
-expand_factor = 32
-input_feat = torch.rand(N, C)  # 입력 텐서 (N, C)
+# 0, 1, 2 반복 생성
+batch_tensor = torch.arange(segments).repeat_interleave(points_per_segment)[:num_points]
+batch_tensor = batch_tensor.to(dtype=torch.int64)
 
-# MLP 초기화
-mlp = ExpandMLP(input_dim=C, output_dim=C // expand_factor, expand_factor=expand_factor)
-
-# 출력
-output_feat = mlp(input_feat)
-print("출력 크기:", output_feat.shape)  # (30N, C/30)
+print(batch_tensor)

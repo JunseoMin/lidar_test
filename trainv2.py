@@ -10,7 +10,7 @@ def load_kitti_bin(file_path):
     return np.fromfile(file_path, dtype=np.float32).reshape(-1, 4)
 
 
-def kitti_to_dict(file_path, grid_size=0.05, batch_id=0):
+def kitti_to_dict(file_path, grid_size=0.05, segments=3):
     raw_data = load_kitti_bin(file_path)
     coords = raw_data[:, :3]  # x, y, z
     intensity = raw_data[:, 3:4]  # intensity as a feature
@@ -20,7 +20,14 @@ def kitti_to_dict(file_path, grid_size=0.05, batch_id=0):
         torch.tensor(intensity, dtype=torch.float32)
     ], dim=1)
 
-    batch_tensor = torch.full((features.shape[0],), 0, dtype=torch.int64)
+    num_points = features.shape[0]
+    segments = segments
+
+    points_per_segment = (num_points + segments - 1) // segments
+
+    batch_tensor = torch.arange(segments).repeat_interleave(points_per_segment)[:num_points]
+    batch_tensor = batch_tensor.to(dtype=torch.int64)
+    # batch_tensor = torch.full((features.shape[0],), 0, dtype=torch.int64)
 
     # print(batch_tensor)
     return {
@@ -41,7 +48,7 @@ class PointCloudDataset(Dataset):
 
     def __getitem__(self, idx):
         file_path = self.file_paths[idx]
-        return kitti_to_dict(file_path, grid_size=self.grid_size, batch_id=idx)
+        return kitti_to_dict(file_path, grid_size=self.grid_size)
 
 
 class LidarUpsampleLoss(nn.Module):
@@ -50,9 +57,12 @@ class LidarUpsampleLoss(nn.Module):
         self.criterion = nn.MSELoss()
 
     def forward(self, pred_points, gt_points):
-        max_len = min(len(pred_points["feat"]), len(gt_points["feat"]))
+        max_len = min(len(pred_points["feat"]), len(gt_points["feat"][:,:3]))
+        # print(max_len)
+        # print("pred shape: ",pred_points["feat"].shape)
+        # print(gt_points.shape)
         pred = pred_points["feat"][:max_len]
-        gt = gt_points["coord"][:max_len]
+        gt = gt_points["feat"][:max_len,:3]
         loss = self.criterion(pred, gt)
         return loss
 
@@ -77,7 +87,7 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
             total_loss += loss.item()
 
         avg_loss = total_loss / len(train_dataset)
-        print(f"Epoch {epoch}/{num_epochs}, Loss: {avg_loss:.4f}, LR: {scheduler.get_last_lr()[0]:.6f}")
+        print(f"Epoch {epoch}/{num_epochs}, Loss: {avg_loss:.4f}, Min Loss {min_loss:.4f}, LR: {scheduler.get_last_lr()[0]:.6f}")
         
         # Save model if loss decreases
         if avg_loss < min_loss:
@@ -89,10 +99,10 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
         # Update learning rate scheduler
         scheduler.step()
 
-        save_path = "/home/server01/js_ws/lidar_test/ckpt/epoch_{epoch}.pth"
+        save_path = f"/home/server01/js_ws/lidar_test/ckpt/epoch_{epoch}.pth"
         torch.save(model.state_dict(), save_path)
 
-        print("epoch {} finished",epoch)
+        print(f"==== epoch {epoch} finished ====")
 
 
 
@@ -125,7 +135,7 @@ model = Lidar4US(
     dec_channels=(128, 128, 256, 256, 512),
     train_decoder=True,
     order=("z", "z-trans", "hilbert", "hilbert-trans"),
-    upsample_ratio=32,
+    upsample_ratio=16,
     out_channel=3,
 )
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)    #0.001 0.0005
@@ -136,4 +146,4 @@ scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.5)
 criterion = LidarUpsampleLoss()
 
 # Train the model
-train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterion, device, num_epochs=120)
+train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterion, device, num_epochs=70)

@@ -97,7 +97,7 @@ class Loss(nn.Module):
         pred_p = pred_points.feat[:max_pcl_len]
         gt_p = gt_points["coord"][:max_pcl_len]
 
-        
+
 
         return torch.mean(loss)
 
@@ -133,7 +133,7 @@ model = Lidar4US(
     dec_channels=(128, 128, 256, 256, 512),
     train_decoder=True,
     order=("z", "z-trans", "hilbert", "hilbert-trans"),
-    upsample_ratio=32,
+    upsample_ratio=16,
     out_channel = 3,
 )
 
