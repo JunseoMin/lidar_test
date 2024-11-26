@@ -5,6 +5,7 @@ import numpy as np
 from glob import glob
 from model.LidarUpsample import Lidar4US
 
+import time
 
 def load_kitti_bin(file_path):
     return np.fromfile(file_path, dtype=np.float32).reshape(-1, 4)
@@ -76,6 +77,7 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
 
     for epoch in range(1, num_epochs + 1):
         total_loss = 0
+        start_time = time.time()
 
         for train_data, gt_data in zip(train_dataset, gt_dataset):
             optimizer.zero_grad()
@@ -87,8 +89,8 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
             total_loss += loss.item()
 
         avg_loss = total_loss / len(train_dataset)
-        print(f"Epoch {epoch}/{num_epochs}, Loss: {avg_loss:.4f}, Min Loss {min_loss:.4f}, LR: {scheduler.get_last_lr()[0]:.6f}")
-        
+        print(f"Epoch {epoch}/{num_epochs}, Loss: {avg_loss:.4f}, Min Loss {min_loss:.4f}, LR: {scheduler.get_last_lr()[0]:.6f}")        
+        print(f"Epoch {epoch} time: {time.time() - start_time:.2f} seconds")
         # Save model if loss decreases
         if avg_loss < min_loss:
             min_loss = avg_loss
@@ -138,12 +140,12 @@ model = Lidar4US(
     upsample_ratio=16,
     out_channel=3,
 )
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)    #0.001 0.0005
+optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=1e-2)
 
 # StepLR Scheduler
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.5)
+scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
 
 criterion = LidarUpsampleLoss()
 
 # Train the model
-train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterion, device, num_epochs=70)
+train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterion, device, num_epochs=60)
