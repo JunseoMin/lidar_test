@@ -1,58 +1,31 @@
 import torch
 import torch.nn as nn
 
-class FinalBlockWithAttention(nn.Module):
-    def __init__(self, in_features, hidden_features, out_features, num_heads):
+class ExpandMLP(nn.Module):
+    def __init__(self, input_dim, output_dim, expand_factor):
         super().__init__()
-        # 1. Linear Transformation: Input -> Hidden
-        self.fc1 = nn.Linear(in_features, hidden_features)
-        
-        # 2. Multi-Head Attention
-        self.attention = nn.MultiheadAttention(embed_dim=hidden_features, num_heads=num_heads, batch_first=True)
-        
-        # 3. Linear Transformation: Hidden -> Output
-        self.fc2 = nn.Linear(hidden_features, out_features)
-        
-        # Activation and Dropout
-        self.act = nn.GELU()
-        self.dropout = nn.Dropout(0.1)
-        
-        # LayerNorm for stability
-        self.norm1 = nn.LayerNorm(hidden_features)
-        self.norm2 = nn.LayerNorm(hidden_features)
+        self.expand_factor = expand_factor  # 30
+        self.mlp = nn.Sequential(
+            nn.Linear(input_dim, output_dim * expand_factor),  # C -> 30 * C/30
+            nn.ReLU()
+        )
 
     def forward(self, x):
-        # x shape: (batch_size, num_points, in_features)
-        batch_size, num_points, _ = x.size()
-        
-        # 1. Input Transformation
-        x = self.fc1(x)  # Shape: (batch_size, num_points, hidden_features)
-        x = self.act(x)
-        x = self.dropout(x)
-        
-        # 2. Multi-Head Attention
-        # Attention requires shape (batch_size, seq_length, embed_dim)
-        x_residual = x  # Save residual connection
-        x, _ = self.attention(x, x, x)  # Self-attention (Q=K=V=x)
-        x = self.norm1(x + x_residual)  # Add & Norm
-        
-        # 3. Output Transformation
-        x_residual = x  # Save another residual connection
-        x = self.fc2(x)  # Shape: (batch_size, num_points, out_features)
-        x = self.norm2(x + x_residual)  # Add & Norm
-        
-        return x
+        # x의 크기: (N, C)
+        expanded = self.mlp(x)  # (N, 30 * C/30)
+        expanded = expanded.view(-1, self.expand_factor, expanded.size(-1) // self.expand_factor)
+        # 크기 변환: (N, 30, C/30)
+        expanded = expanded.view(-1, expanded.size(-1))  # (30N, C/30)
+        return expanded
 
-# FinalBlockWithAttention 초기화
-in_features = 32         # 입력 채널
-hidden_features = 64     # Attention 차원
-out_features = 3         # 출력 채널
-num_heads = 4            # Multi-Head Attention 헤드 수
-final_block = FinalBlockWithAttention(in_features, hidden_features, out_features, num_heads)
+# 예제: 입력 및 출력
+N, C = 2, 64
+expand_factor = 32
+input_feat = torch.rand(N, C)  # 입력 텐서 (N, C)
 
-# 입력 데이터 생성: batch_size=4, num_points=3770, in_features=32
-x = torch.randn(3770, 32)  # Shape: (batch_size, num_points, in_features)
+# MLP 초기화
+mlp = ExpandMLP(input_dim=C, output_dim=C // expand_factor, expand_factor=expand_factor)
 
-# 출력 확인
-output = final_block(x)
-print("Output shape:", output.shape)
+# 출력
+output_feat = mlp(input_feat)
+print("출력 크기:", output_feat.shape)  # (30N, C/30)

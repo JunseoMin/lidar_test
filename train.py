@@ -87,24 +87,24 @@ class PointCloudDataset(Dataset):
         return kitti_to_dict(file_path, grid_size=self.grid_size, batch_id=batch_id)
 
 
-class MAELoss(nn.Module):
+class Loss(nn.Module):
     def __init__(self):
         super().__init__()
 
     def forward(self, pred_points, gt_points):
-        """
-        Compute Mean Absolute Error (MAE) Loss.
-        :param pred_points: Predicted upsampled points [B, N, 3]
-        :param gt_points: Ground truth points [B, M, 3]
-        :return: MAE Loss
-        """
-        gt.serialization(orders)
-        pred.serialization(orders)
+        max_pcl_len = min(len(pred_points.feat,gt_points["feat"]))
 
-        # Compute absolute difference between predicted and ground truth
-        loss = torch.abs(pred_points - gt_points)
-        # Return the mean over all the points
+        pred_p = pred_points.feat[:max_pcl_len]
+        gt_p = gt_points["coord"][:max_pcl_len]
+
+        
+
         return torch.mean(loss)
+
+
+
+
+
 
 
 ## !!gt and train has the same filename!!
@@ -118,32 +118,32 @@ model = Lidar4US(
     in_channels=4,  #coord + intensity
     drop_path=0.3,
     block_depth=(2, 2, 2, 6, 6, 2),
-    enc_channels=(32, 64, 128, 256, 512, 1024),
-    enc_n_heads=(2, 4, 8, 16, 32, 64),
+    enc_channels=(32, 64, 128, 64, 32, 16),
+    enc_n_heads=(2, 4, 8, 16, 16, 8),
     enc_patch_size=(1024, 1024, 1024, 1024, 1024, 1024),
     qkv_bias=True,
     qk_scale=None,
     attn_drop=0.0,
     proj_drop=0.0,
     mlp_ratio=4,
-    stride=(2, 2, 2, 2, 2),
+    stride=(2, 2, 4, 4, 4),
     dec_depths=(2, 2, 2, 2, 2),
     dec_n_head=(4, 4, 8, 16, 32),
-    dec_patch_size=(1024, 1024, 1024, 1024, 1024, ),
-    dec_channels=(32, 64, 128, 256, 512),
-    out_channel = 3,
+    dec_patch_size=(1024, 1024, 1024, 1024, 1024),
+    dec_channels=(128, 128, 256, 256, 512),
     train_decoder=True,
-    order=("z", "z-trans", "hilbert", "hilbert-trans")
+    order=("z", "z-trans", "hilbert", "hilbert-trans"),
+    upsample_ratio=32,
+    out_channel = 3,
 )
 
-loss_fn = MAELoss()
 optimizer = optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
 
 num_epochs = 10
 device = torch.device("cuda")
 
 model.to(device)
-loss_fn.to(device)
+# loss_fn.to(device)
 
 ## TEST 1 just make x30 size output(11/22)
 
@@ -165,6 +165,8 @@ orders=("z", "z-trans", "hilbert", "hilbert-trans")
 # print("order :")
 # print(max(p_gt.serialized_order[0]))
 
+
+# print(torch.concat(train_dataset[0]["feat"][0],torch.tensor([0,0,0,0]),dim = 1))
 # sys.exit()
 
 for epoch in range(num_epochs):
@@ -173,12 +175,12 @@ for epoch in range(num_epochs):
 
     for i in range(len(train_dataset)):
         pred = model(train_dataset[i])
-        gt = Point(gt_dataset[i])
+        print(pred.feat.shape)
+        print(gt_dataset[i]["coord"].shape)
 
-        loss = loss_fn(pred, gt)
-        optimizer.zero_grad()
-        loss.backward()
 
-        total_loss += loss.item()
+    sys.exit()
+
+
 
     print(f"Epoch [{epoch + 1}/{num_epochs}], Loss: {total_loss:.4f}")

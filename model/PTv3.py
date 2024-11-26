@@ -832,6 +832,7 @@ class PointTransformerV3(PointModule):
         assert self.cls_mode or self.num_stages == len(dec_channels) + 1
         assert self.cls_mode or self.num_stages == len(dec_num_head) + 1
         assert self.cls_mode or self.num_stages == len(dec_patch_size) + 1
+    
 
         # norm layers
         if pdnorm_bn:

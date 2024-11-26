@@ -79,7 +79,7 @@ def process_files_in_parallel(file_paths, train_dir, gt_dir, sparse_factor, num_
         pool.starmap(process_file, args)
 
 
-file_paths = glob("/home/server01/js_ws/dataset/2011_09_26/**/*.bin", recursive=True)
+file_paths = glob("/home/server01/js_ws/dataset/**/*.bin", recursive=True)
 train_ratio = 0.9
 num_train = int(len(file_paths) * train_ratio)
 random.shuffle(file_paths)
@@ -91,7 +91,7 @@ train_output_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/train"
 test_output_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/test"
 gt_output_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/GT"
 
-sparse_factor = 30
+sparse_factor = 32
 
 process_files_in_parallel(train_files, train_output_dir, gt_output_dir, sparse_factor, num_workers=20)
 process_files_in_parallel(test_files, test_output_dir, gt_output_dir, sparse_factor, num_workers=20)

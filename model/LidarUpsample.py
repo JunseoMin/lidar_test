@@ -495,7 +495,6 @@ class CloseSerializedAttn(PointModule):
                  channels,
                  patch_size,
                  n_heads,
-                 sigma_init = 0.02,
                  qk_scale = None,
                  atten_bias = True,
                  atten_dropout = 0.,
@@ -504,9 +503,7 @@ class CloseSerializedAttn(PointModule):
                  ):
         super().__init__()
 
-        self.sigma = nn.Parameter(torch.tensor(sigma_init))
         self.channels = channels
-        self.patch_size = patch_size
         self.n_heads = n_heads
 
         assert channels % n_heads == 0, "channel should be devided by the number of heads"
@@ -524,6 +521,7 @@ class CloseSerializedAttn(PointModule):
         self.proj_dropout = nn.Dropout(proj_dropout)
         self.softmax = nn.Softmax(dim = -1)
 
+
     @torch.no_grad()
     def get_rel_pos(self, point, order):
         K = self.patch_size
@@ -535,10 +533,10 @@ class CloseSerializedAttn(PointModule):
             point[rel_pos_key] = relative_positions
         return point[rel_pos_key]
 
-    @torch.no_grad()
-    def calculate_distance_weights(self, relative_positions):
-        distances_squared = torch.sum(relative_positions**2, dim=-1)
-        return torch.exp(-distances_squared / (2 * self.sigma**2))
+    # @torch.no_grad()
+    # def calculate_distance_weights(self, relative_positions):
+    #     distances_squared = torch.sum(relative_positions**2, dim=-1)
+    #     return torch.exp(-distances_squared / (2 * self.sigma**2))
     
     @torch.no_grad()
     def get_padding_and_inverse(self, point):
@@ -582,6 +580,8 @@ class CloseSerializedAttn(PointModule):
                         - self.patch_size
                     ]
                 pad[_offset_pad[i] : _offset_pad[i + 1]] -= _offset_pad[i] - _offset[i]
+                # print("!!!!")
+                # print(self.patch_size)
                 cu_seqlens.append(
                     torch.arange(
                         _offset_pad[i],
@@ -599,6 +599,13 @@ class CloseSerializedAttn(PointModule):
         return point[pad_key], point[unpad_key], point[cu_seqlens_key]
 
     def forward(self, point):
+        """
+        @torch.inference_mode()
+        def offset2bincount(offset):
+            return torch.diff(
+                offset, prepend=torch.tensor([0], device=offset.device, dtype=torch.long)
+            )
+        """
         self.patch_size = min(
                 offset2bincount(point.offset).min().tolist(), self.patch_size_max
             )
@@ -622,9 +629,9 @@ class CloseSerializedAttn(PointModule):
                 qkv.reshape(-1, K, 3, H, C // H).permute(2, 0, 3, 1, 4).unbind(dim=0)
             )
         attn = (q * self.scale) @ k.transpose(-2, -1)  # (N', H, K, K)
-        relative_positions = self.get_rel_pos(point, order)
-        distance_weights = self.calculate_distance_weights(relative_positions)
-        distance_weights = torch.log(distance_weights)
+        # relative_positions = self.get_rel_pos(point, order)
+        # distance_weights = self.calculate_distance_weights(relative_positions)
+        # distance_weights = torch.log(distance_weights)
         # attn = attn + distance_weights
 
         attn = self.softmax(attn)
@@ -632,6 +639,9 @@ class CloseSerializedAttn(PointModule):
         feat = (attn @ v).transpose(1, 2).reshape(-1, C)
 
         feat = feat[inverse]
+        feat = self.projection(feat)
+        feat = self.proj_dropout(feat)        
+
         point.feat = feat
         return point
         
@@ -708,10 +718,50 @@ class Block(PointModule):
         point.feat = shortcut + point.feat
 
         point.sparse_conv_feat = point.sparse_conv_feat.replace_feature(point.feat)
-        print("Block output shape:", point.feat.shape)
         return point
 
-    
+class ExpendingMLP(nn.Module):
+    def __init__(self, 
+                 in_channels,
+                 out_channels,
+                 upsample_ratio = 32
+                 ):
+        r"""
+        in_channels: last decoder output channel
+        out_channels: in_channels // upsample_ratio
+        """
+        super().__init__()
+        assert not in_channels%upsample_ratio, "in_channels should be devided by the upsample ratio"
+        self.upsample_ratio = 32
+
+        self.ln1 = nn.Linear(in_channels, out_channels * upsample_ratio)    # (N, 30 * C / 30)
+        self.act = nn.GELU()
+
+    def forward(self,point):
+        point = self.ln1(point)
+        point = self.act(point)
+
+        point = point.view(-1, self.upsample_ratio, point.size(-1) // self.upsample_ratio)
+        point = point.view(-1, point.size(-1)) 
+
+        return point
+
+class FC(nn.Module):
+    def __init__(self,
+                  in_channels,
+                  hidden,
+                  out_channels = 3):
+        super().__init__()
+        self.fc = nn.Linear(in_channels,hidden)
+        self.act = nn.GELU()
+        self.fc2 = nn.Linear(hidden,out_channels)
+
+    def forward(self,x):
+        x = self.fc(x)
+        x = self.act(x)
+        x = self.fc2(x)
+        return x
+
 class Lidar4US(PointModule):
     def __init__(self, 
                  in_channels,
@@ -732,6 +782,7 @@ class Lidar4US(PointModule):
                  dec_channels,
                  train_decoder = False,
                  order = ("z", "z-trans", "hilbert", "hilbert-trans"),
+                 upsample_ratio = 32,
                  out_channel=3
                 ):
         super().__init__()
@@ -774,6 +825,20 @@ class Lidar4US(PointModule):
             norm_layer=partial(nn.BatchNorm1d, eps=1e-3, momentum=0.01),
             act_layer=nn.GELU,
         )
+
+        self.expend = PointSequential()
+        self.expend.add(ExpendingMLP(
+            dec_channels[0],
+            dec_channels[0]//upsample_ratio,
+            upsample_ratio
+        ))
+
+        self.fc = PointSequential()
+        self.fc.add(FC(
+            in_channels=dec_channels[0] // upsample_ratio,
+            hidden=(dec_channels[0] // upsample_ratio)*2,
+            out_channels=out_channel
+        ))
 
     def generate_encoder(self, 
                          drop_path, 
@@ -871,8 +936,7 @@ class Lidar4US(PointModule):
                          ):
         dec_drop_path = [ x.item() for x in torch.linspace(0, drop_path, sum(dec_depths)) ]
         dec_channels = list(dec_channels) + [enc_channels[-1]]
-
-        for stage in reversed(range(n_stage - 1)):
+        for stage in reversed(range(1,n_stage - 1)):
             _dec_drop_path = dec_drop_path[sum(dec_depths[:stage]) : sum(dec_depths[:stage + 1])]
 
             _dec_drop_path.reverse()
@@ -910,6 +974,7 @@ class Lidar4US(PointModule):
 
     def forward(self, data_dict):
         point = Point(data_dict)
+        # point = self.padding(point)
 
         point.serialization(self.order,shuffle_orders=True)
         point.sparsify()
@@ -917,10 +982,14 @@ class Lidar4US(PointModule):
         point = self.embedding(point)
 
         descriptor = self.encoder(point)
-        print("encoded shape:", point.feat.shape)
+        # print("encoded shape:", point.feat.shape)
 
-        if not self.train_decoder:
+        if self.train_decoder:
             point = self.decoder(descriptor)
-            print("decoded shape:",point.feat.shape)
+            point = self.expend(point)
+            point = self.fc(point)
+
+            # print("decoded shape:",point.feat.shape)
+            return point
 
         return descriptor
