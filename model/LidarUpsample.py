@@ -732,18 +732,16 @@ class ExpendingMLP(nn.Module):
         """
         super().__init__()
         assert not in_channels%upsample_ratio, "in_channels should be devided by the upsample ratio"
-        self.upsample_ratio = 32
-
+        self.upsample_ratio = upsample_ratio
         self.ln1 = nn.Linear(in_channels, out_channels * upsample_ratio)    # (N, 30 * C / 30)
         self.act = nn.GELU()
 
-    def forward(self,point):
+    def forward(self, point):
         point = self.ln1(point)
         point = self.act(point)
 
         point = point.view(-1, self.upsample_ratio, point.size(-1) // self.upsample_ratio)
         point = point.view(-1, point.size(-1)) 
-
         return point
 
 class FC(nn.Module):
