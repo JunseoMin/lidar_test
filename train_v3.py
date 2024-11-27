@@ -160,7 +160,7 @@ if __name__ == '__main__':
     # Initialize dataset and dataloaders
     train_dataset = PointCloudDataset(train_file_paths)
     gt_dataset = PointCloudDataset(gt_file_paths)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-3, weight_decay=1e-2)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=1e-2)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
     criterion = LidarUpsampleLoss()
 
