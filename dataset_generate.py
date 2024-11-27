@@ -54,14 +54,24 @@ def process_files_in_parallel(file_paths, train_dir, gt_dir, sparse_factor, num_
     with Pool(num_workers) as pool:
         pool.starmap(process_file, args)
 
+def process(file_paths, train_dir, gt_dir, sparse_factor):
+    for i in range(len(file_paths)):
+        process_file(file_path=file_paths[i], train_dir=train_dir, gt_dir= gt_dir, sparse_factor=sparse_factor, idx=i)
 
-file_paths = glob("/home/server01/js_ws/dataset/**/*.bin", recursive=True)
-train_ratio = 0.9
-num_train = int(len(file_paths) * train_ratio)
-random.shuffle(file_paths)
+    return len(file_paths)
 
-train_files = file_paths[:num_train]
-test_files = file_paths[num_train:]
+train_file_paths = glob("/home/server01/js_ws/dataset/2011_09_2**/**/*.bin", recursive=True)
+test_file_paths_0930 = glob("/home/server01/js_ws/dataset/2011_09_30/**/*.bin", recursive=True)
+# test_file_paths_1003 = glob("/home/server01/js_ws/dataset/2011_10_03/**/*.bin", recursive=True)
+test_file_paths = test_file_paths_0930
+
+
+# train_ratio = 1
+# num_train = int(len(file_paths) * train_ratio)
+# random.shuffle(file_paths)
+
+train_files = train_file_paths
+test_files = test_file_paths
 
 train_output_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/train"
 test_output_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/test"
@@ -69,16 +79,11 @@ gt_output_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/GT"
 gt_test_output_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/GT_test"
 
 sparse_factor = 16
+  
+trainlen = process(train_files,train_output_dir,gt_output_dir,sparse_factor)
+testlen = process(test_files,test_output_dir,gt_test_output_dir,sparse_factor)
 
-def process(file_paths, train_dir, gt_dir, sparse_factor):
-    for i in range(len(file_paths)):
-        process_file(file_path=file_paths[i], train_dir=train_dir, gt_dir= gt_dir, sparse_factor=sparse_factor, idx=i)
-
-        if i == len(file_paths) -1:
-            print(f"process finished! num dataset: {i}")
-    
-process(train_files,train_output_dir,gt_output_dir,sparse_factor)
-process(test_files,test_output_dir,gt_test_output_dir,sparse_factor)
+print(f"process finished! train data: {trainlen} test data: {testlen}")
 
 # process_files_in_parallel(train_files, train_output_dir, gt_output_dir, sparse_factor, num_workers=20)
 # process_files_in_parallel(test_files, test_output_dir, gt_output_dir, sparse_factor, num_workers=20)

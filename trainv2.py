@@ -95,7 +95,13 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
         if avg_loss < min_loss:
             min_loss = avg_loss
             save_path = "/home/server01/js_ws/lidar_test/ckpt/new_weights.pth"
-            torch.save(model.state_dict(), save_path)
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'min_loss': min_loss
+            }, save_path)
             print(f"Model saved at {save_path} with loss: {min_loss:.4f}")
             
         # Update learning rate scheduler
