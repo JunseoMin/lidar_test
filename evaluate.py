@@ -27,9 +27,7 @@ def kitti_to_dict(file_path, device, grid_size=0.05, segments=3):
 
     batch_tensor = torch.arange(segments, device=device).repeat_interleave(points_per_segment)[:num_points]
     batch_tensor = batch_tensor.to(dtype=torch.int64)
-    # batch_tensor = torch.full((features.shape[0],), 0, dtype=torch.int64)
 
-    # print(batch_tensor)
     return {
         "coord": features[:, :3],
         "feat": features,
@@ -115,17 +113,16 @@ def main():
     print(checkpoint.keys())
     model.load_state_dict(checkpoint['model_state_dict'])
     print("model set!")
-    # try:
-    avg_inference_time = evaluate_model(model, input_dir, output_dir, device)
-    print(f"Evaluation completed successfully!")
-    print(f"Results saved to: {output_dir}")
-    print(f"Average inference time: {avg_inference_time:.4f}s")
-    # except Exception as e:
-    #     print(f"Evaluation failed with error: {str(e)}")
+    try:
+        avg_inference_time = evaluate_model(model, input_dir, output_dir, device)
+        print(f"Evaluation completed successfully!")
+        print(f"Results saved to: {output_dir}")
+        print(f"Average inference time: {avg_inference_time:.4f}s")
+    except Exception as e:
+        print(f"Evaluation failed with error: {str(e)}")
 
 if __name__ == '__main__':
-    # try:
-    main()
-    # except Exception as e:
-    #     pass
-    #     print(f"Exception in main: {str(e)}")
+    try:
+        main()
+    except Exception as e:
+        print(f"Exception in main: {str(e)}")
