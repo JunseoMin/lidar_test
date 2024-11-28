@@ -803,7 +803,6 @@ class Lidar4US(PointModule):
                               )
 
         assert len(enc_channels) == n_stage, "Encoder channels must match number of stages"
-        assert len(dec_channels) == n_stage - 2, "Decoder channels must match number of stages - 2"
         assert len(stride) == n_stage - 1, "Stride must match number of stages - 1"
         assert all(ps > 0 for ps in enc_patch_size), "Patch sizes must be positive"
         assert all(ps > 0 for ps in dec_patch_size), "Patch sizes must be positive"
