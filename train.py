@@ -12,6 +12,8 @@ import argparse
 import glob
 import numpy as np
 
+from tqdm import tqdm
+
 # from sklearn.neighbors import NearestNeighbors
 
 def load_kitti_bin(file_path):
@@ -96,8 +98,15 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
     for epoch in range(start_epoch, num_epochs + 1):
         total_loss = 0
         start_time = time.time()
+        print(f"----- Epoch {epoch} start -----")
+        
+        data_loader = tqdm(zip(train_dataset, gt_dataset), total=len(train_dataset), desc=f"Epoch {epoch}/{num_epochs}", colour = '#0000FF')
 
-        for train_data, gt_data in zip(train_dataset, gt_dataset):
+        for train_data, gt_data in data_loader:
+            
+            # train_data = {key: value.to(device) for key, value in train_data.items()}
+            # gt_data = {key: value.to(device) for key, value in gt_data.items()}
+            
             optimizer.zero_grad()
             pred = model(train_data)  # Forward pass
             loss = criterion(pred, gt_data)  # Compute loss
@@ -133,7 +142,7 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
         print(f"Model saved at {save_path}")
 
         scheduler.step()
-        print(f"==== epoch {epoch} finished! ====")
+        print(f"----- epoch {epoch} finished! -----")
     print("========== train complete ==========")
 
 if __name__ == '__main__':
@@ -177,12 +186,13 @@ if __name__ == '__main__':
     train_dataset = PointCloudDataset(train_file_paths)
     gt_dataset = PointCloudDataset(gt_file_paths)
     optimizer = torch.optim.AdamW(model.parameters(), lr=4e-4, weight_decay=1e-3)
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[30, 60, 100], gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[30, 60, 100], gamma=0.5)
     criterion = HybridLoss(alpha=0.2)
 
     if args.resume_from:
-        ckptr = torch.load(args.resume_from)
+        ckptr = torch.load(args.resume_from, map_location=device)   # load to device(GPU)
         model.load_state_dict(ckptr['model_state_dict'])
+        model.to(device)
         scheduler.load_state_dict(ckptr['scheduler_state_dict'])
         optimizer.load_state_dict(ckptr['optimizer_state_dict'])
         start_epoch = ckptr['epoch'] + 1

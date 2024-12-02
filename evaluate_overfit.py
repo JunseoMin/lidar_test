@@ -89,7 +89,7 @@ def main():
 
     
     ckpt_dir = "/home/server01/js_ws/lidar_test/ckpt/best_model_v3.5.pth"
-    input_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti_4/train/0.bin"
+    input_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/train/0.bin"
     # input_gt_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/gt/0.bin"
     output_dir = "/home/server01/js_ws/lidar_test/evaluate_output/v3.5"
     
@@ -112,12 +112,11 @@ def main():
         dec_channels=(128, 128, 128, 256, 512),
         train_decoder=True,
         exp_hidden=128,
-        exp_out=64,
+        exp_out=128,
         order=("z", "z-trans", "hilbert", "hilbert-trans"),
         upsample_ratio=16,
         out_channel=3,
     )
-    
     
     
     
