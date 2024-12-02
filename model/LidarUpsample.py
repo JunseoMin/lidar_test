@@ -19,6 +19,7 @@ import torch_scatter
 
 from einops import rearrange
 
+
 #PTv3 (not modified) ---------------------------------
 
 @torch.inference_mode()
@@ -580,8 +581,8 @@ class CloseSerializedAttn(PointModule):
                         - self.patch_size
                     ]
                 pad[_offset_pad[i] : _offset_pad[i + 1]] -= _offset_pad[i] - _offset[i]
-                # print("!!!!")
-                # print(self.patch_size)
+                #print("!!!!")
+                #print(self.patch_size)
                 cu_seqlens.append(
                     torch.arange(
                         _offset_pad[i],
@@ -616,14 +617,14 @@ class CloseSerializedAttn(PointModule):
 
         pad, unpad, cu_seqlens = self.get_padding_and_inverse(point)
         order = point.serialized_order[self.order_idx][pad]
-        # print("attndebug ===========")
-        # print(point.serialized_order[self.order_idx])
-        # print(order)
-        # print("attndebug ===========")
+        #print("attndebug ===========")
+        #print(point.serialized_order[self.order_idx])
+        #print(order)
+        #print("attndebug ===========")
         inverse = unpad[point.serialized_inverse[self.order_idx]]
 
         qkv = self.qkv(point.feat)[order]
-        # print(qkv)
+        # #print(qkv)
 
         q, k, v = (
                 qkv.reshape(-1, K, 3, H, C // H).permute(2, 0, 3, 1, 4).unbind(dim=0)
@@ -718,46 +719,66 @@ class Block(PointModule):
         point.feat = shortcut + point.feat
 
         point.sparse_conv_feat = point.sparse_conv_feat.replace_feature(point.feat)
+        #print(f"block output feat shape: {point.feat.shape}")
         return point
 
-class ExpendingMLP(nn.Module):
-    def __init__(self, 
-                 in_channels,
-                 out_channels,
-                 upsample_ratio = 32
-                 ):
-        r"""
-        in_channels: last decoder output channel
-        out_channels: in_channels // upsample_ratio
-        """
+
+class FeatureExpending(PointModule):
+    r"""
+    Expand the featuremap to the upsample ratio with C2 channel and reshape
+    """
+    def __init__(self, in_feat_channels, c1 , c2, upsample_ratio):
         super().__init__()
-        assert not in_channels%upsample_ratio, "in_channels should be devided by the upsample ratio"
         self.upsample_ratio = upsample_ratio
-        self.ln1 = nn.Linear(in_channels, out_channels * upsample_ratio)    # (N, 30 * C / 30)
-        self.act = nn.GELU()
-
+        
+        self.conv1x1sets = nn.ModuleList()
+        for i in range(upsample_ratio):
+            conv_set = nn.Sequential(
+                nn.Conv1d(in_feat_channels, c1, kernel_size=1),
+                nn.BatchNorm1d(c1),
+                nn.GELU(),
+                nn.Conv1d(c1, c2, kernel_size=1),
+                nn.BatchNorm1d(c2),
+                nn.GELU()
+            )
+            self.conv1x1sets.append(conv_set)
+        
     def forward(self, point):
-        point = self.ln1(point)
-        point = self.act(point)
-
-        point = point.view(-1, self.upsample_ratio, point.size(-1) // self.upsample_ratio)
-        point = point.view(-1, point.size(-1)) 
+        #print(f"expending input feat shape: {point.feat.shape}")
+        # seperate the feature into different channels
+        feat = rearrange(point.feat, 'n c -> 1 c n')
+        #print(f"expending input feat shape(rearranged): {feat.shape}")
+        concated_feat = []
+        
+        for convset in self.conv1x1sets:
+            tmp_feat = convset(feat)
+            concated_feat.append(tmp_feat)
+        
+        concated_feat = torch.cat(concated_feat, dim=1)
+        
+        #print(f"expending output feat shape: {concated_feat.shape}")
+        point.feat = rearrange(concated_feat, '1 (c r) n -> (r n) c' , r = self.upsample_ratio)    #rearrange the feature channel  [N , rC] -> [rN , C]
+        #print(f"expending output feat shape(rearranged): {point.feat.shape}")
         return point
-
+    
 class FC(nn.Module):
-    def __init__(self,
-                  in_channels,
-                  hidden,
-                  out_channels = 3):
+    def __init__(self, in_channels, hidden_channels, out_channels = 3, dropout = 0.0):
         super().__init__()
-        self.fc = nn.Linear(in_channels,hidden)
-        self.act = nn.GELU()
-        self.fc2 = nn.Linear(hidden,out_channels)
+        self.fc1 = nn.Linear(in_channels, hidden_channels)
+        self.fc2 = nn.Linear(hidden_channels, hidden_channels)
+        self.fc3 = nn.Linear(hidden_channels, out_channels)
+        self.activation = nn.GELU()
+        self.dropout = nn.Dropout(dropout)
 
-    def forward(self,x):
-        x = self.fc(x)
-        x = self.act(x)
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.activation(x)
+        x = self.dropout(x)
         x = self.fc2(x)
+        x = self.activation(x)
+        x = self.dropout(x)
+        x = self.fc3(x)
+        
         return x
 
 class Lidar4US(PointModule):
@@ -778,11 +799,15 @@ class Lidar4US(PointModule):
                  dec_n_head,
                  dec_patch_size,
                  dec_channels,
-                 train_decoder = False,
+                 train_decoder = True,
                  order = ("z", "z-trans", "hilbert", "hilbert-trans"),
                  upsample_ratio = 32,
-                 out_channel=3
+                 out_channel=3,
+                 fc_hidden=512,
+                 exp_hidden=1024,
+                 exp_out=256
                 ):
+        
         super().__init__()
         n_stage = len(block_depth)
         self.order = order
@@ -828,21 +853,24 @@ class Lidar4US(PointModule):
             norm_layer=partial(nn.BatchNorm1d, eps=1e-3, momentum=0.01),
             act_layer=nn.GELU,
         )
-
-        self.expend = PointSequential()
-        self.expend.add(ExpendingMLP(
-            dec_channels[0],
-            dec_channels[0]//upsample_ratio,
-            upsample_ratio
-        ))
-
-        self.fc = PointSequential()
-        self.fc.add(FC(
-            in_channels=dec_channels[0] // upsample_ratio,
-            hidden=(dec_channels[0] // upsample_ratio)*2,
-            out_channels=out_channel
-        ))
-
+        
+        self.expending = PointSequential()
+        self.expending.add(FeatureExpending(
+            in_feat_channels=dec_channels[0],
+            c1 = exp_hidden,
+            c2 = exp_out,
+            upsample_ratio=upsample_ratio
+        ), name="expending")
+        
+        self.fc = PointSequential(
+            FC(
+                in_channels=exp_out,
+                hidden_channels=fc_hidden,
+                out_channels=out_channel,
+                dropout=0.0
+            )
+        )
+        
     def generate_encoder(self, 
                          drop_path, 
                          n_stage,
@@ -939,7 +967,7 @@ class Lidar4US(PointModule):
                          ):
         dec_drop_path = [ x.item() for x in torch.linspace(0, drop_path, sum(dec_depths)) ]
         dec_channels = list(dec_channels) + [enc_channels[-1]]
-        for stage in reversed(range(1,n_stage - 1)):
+        for stage in reversed(range(0,n_stage - 1)):
             _dec_drop_path = dec_drop_path[sum(dec_depths[:stage]) : sum(dec_depths[:stage + 1])]
 
             _dec_drop_path.reverse()
@@ -977,22 +1005,20 @@ class Lidar4US(PointModule):
 
     def forward(self, data_dict):
         point = Point(data_dict)
-        # point = self.padding(point)
 
-        point.serialization(self.order,shuffle_orders=True)
+        point.serialization(self.order, shuffle_orders=True)
         point.sparsify()
-
+        
+        #print(f"embedding input feat shape: {point.feat.shape}")
         point = self.embedding(point)
-
+        #print(f"embedding output feat shape: {point.feat.shape}")
         descriptor = self.encoder(point)
-        # print("encoded shape:", point.feat.shape)
 
         if self.train_decoder:
             point = self.decoder(descriptor)
-            point = self.expend(point)
+            point = self.expending(point)
             point = self.fc(point)
-
-            # print("decoded shape:",point.feat.shape)
+            #print(f"fc output feat shape: {point.feat.shape}")
             return point
 
         return descriptor

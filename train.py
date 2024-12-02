@@ -5,16 +5,20 @@ from chamferdist import ChamferDistance
 
 from model.LidarUpsample import Lidar4US
 
+from geomloss import SamplesLoss
+
 import time
 import argparse
 import glob
 import numpy as np
 
+# from sklearn.neighbors import NearestNeighbors
+
 def load_kitti_bin(file_path):
     return np.fromfile(file_path, dtype=np.float32).reshape(-1, 4)
 
 
-def kitti_to_dict(file_path, grid_size=0.05, segments=3):
+def kitti_to_dict(file_path, grid_size=0.05, segments=1):
     raw_data = load_kitti_bin(file_path)
     coords = raw_data[:, :3]  # x, y, z
     intensity = raw_data[:, 3:4]  # intensity as a feature
@@ -22,7 +26,7 @@ def kitti_to_dict(file_path, grid_size=0.05, segments=3):
     features = torch.cat([
         torch.tensor(coords, dtype=torch.float32),
         torch.tensor(intensity, dtype=torch.float32)
-    ], dim=1)
+    ], dim=1).contiguous()
 
     num_points = features.shape[0]
     segments = segments
@@ -35,11 +39,14 @@ def kitti_to_dict(file_path, grid_size=0.05, segments=3):
 
     # print(batch_tensor)
     return {
-        "coord": features[:, :3].to("cuda"),
-        "feat": features.to("cuda"),
-        "batch": batch_tensor.to("cuda"),
+        "coord": features[:, :3].contiguous().to("cuda"),
+        "feat": features.contiguous().to("cuda"),
+        "batch": batch_tensor.contiguous().to("cuda"),
         "grid_size": torch.tensor(grid_size).to("cuda")
     }
+
+def kitti_to_tensor(file_path):
+    return torch.tensor(load_kitti_bin(file_path)).to("cuda")
 
 
 class PointCloudDataset(Dataset):
@@ -52,27 +59,33 @@ class PointCloudDataset(Dataset):
 
     def __getitem__(self, idx):
         file_path = self.file_paths[idx]
-        return kitti_to_dict(file_path, grid_size=self.grid_size)
+        return kitti_to_dict(file_path)
 
 
-class LidarUpsampleLoss(nn.Module):
-    def __init__(self):
+class HybridLoss(nn.Module):
+    def __init__(self, alpha=0.2):
         super().__init__()
-        self.criterion = ChamferDistance()
-
-    def forward(self, pred_points, gt_points):
-        # Only use XYZ coordinates for distance calculation
-        pred_xyz = pred_points["feat"][:]  # Take only XYZ coordinates
-        gt_xyz = gt_points["feat"][:, :3]      # Take only XYZ coordinates
-
-        # Reshape to (batch_size, num_points, 3)
-        pred = pred_xyz.unsqueeze(0)
-        gt = gt_xyz.unsqueeze(0)
+        self.alpha = alpha
+        self.chamfer = ChamferDistance()
+        self.emd = SamplesLoss(loss="sinkhorn", p=1, blur=0.01)
         
-        # Calculate bidirectional Chamfer Distance
-        loss = self.criterion(pred, gt, bidirectional=True, point_reduction="mean")
-
-        return loss
+    def forward(self, pred_points, gt_points):
+        # Make tensors contiguous
+        pred_xyz = pred_points["feat"][:, :3].contiguous()
+        gt_xyz = gt_points["feat"][:, :3].contiguous()
+        
+        # Reshape for Chamfer Distance
+        pred_chamfer = pred_xyz.unsqueeze(0).contiguous()
+        gt_chamfer = gt_xyz.unsqueeze(0).contiguous()
+        
+        # Compute both losses
+        chamfer_loss = self.chamfer(pred_chamfer, gt_chamfer, bidirectional=True, point_reduction="mean")
+        emd_loss = self.emd(pred_xyz, gt_xyz)
+        
+        # Combine losses
+        total_loss = self.alpha * chamfer_loss + (1 - self.alpha) * emd_loss
+        
+        return total_loss
 
 
 def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterion, device, start_epoch=1, min_loss=float('inf'), num_epochs=120):
@@ -99,7 +112,7 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
 
         if avg_loss < min_loss:
             min_loss = avg_loss
-            save_path = "/home/server01/js_ws/lidar_test/ckpt/best_model.pth"
+            save_path = "/home/server01/js_ws/lidar_test/ckpt/best_model_v3.5.pth"
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -109,7 +122,7 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
             }, save_path)
             print(f"Best model saved at {save_path} with loss: {min_loss:.4f}")
 
-        save_path = f"/home/server01/js_ws/lidar_test/ckpt/latest.pth"
+        save_path = f"/home/server01/js_ws/lidar_test/ckpt/latest_v3.5.pth"
         torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -130,24 +143,27 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
     model = Lidar4US(
         in_channels=4,  # coord + intensity
         drop_path=0.3,
-        block_depth=(2, 2, 2, 6, 6, 2),
-        enc_channels=(32, 64, 128, 64, 32, 16),
-        enc_n_heads=(2, 4, 8, 16, 16, 8),
-        enc_patch_size=(1024, 1024, 1024, 1024, 1024, 1024),
+        block_depth=(2, 2, 2, 4, 2),
+        enc_channels=(32, 64, 128, 512, 512),
+        enc_n_heads=(2, 4, 8, 16, 32),
+        enc_patch_size=(1024, 1024, 1024, 1024, 1024),
+        stride=(2, 2, 2, 2),
         qkv_bias=True,
         qk_scale=None,
-        attn_drop=0.0,
-        proj_drop=0.0,
+        attn_drop=0.1,
+        proj_drop=0.1,
         mlp_ratio=4,
-        stride=(2, 2, 4, 4, 4),
         dec_depths=(2, 2, 2, 2, 2),
-        dec_n_head=(4, 4, 8, 16, 32),
+        dec_n_head=(2, 4, 8, 16, 32 ),
         dec_patch_size=(1024, 1024, 1024, 1024, 1024),
-        dec_channels=(128, 128, 256, 256, 512),
+        dec_channels=(128, 128, 128, 256, 512),
         train_decoder=True,
+        exp_hidden=128,
+        exp_out=128,
         order=("z", "z-trans", "hilbert", "hilbert-trans"),
         upsample_ratio=16,
         out_channel=3,
@@ -160,9 +176,9 @@ if __name__ == '__main__':
     # Initialize dataset and dataloaders
     train_dataset = PointCloudDataset(train_file_paths)
     gt_dataset = PointCloudDataset(gt_file_paths)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=1e-2)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
-    criterion = LidarUpsampleLoss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=4e-4, weight_decay=1e-3)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[30, 60, 100], gamma=0.1)
+    criterion = HybridLoss(alpha=0.2)
 
     if args.resume_from:
         ckptr = torch.load(args.resume_from)

@@ -35,8 +35,18 @@ def kitti_to_dict(file_path, device, grid_size=0.05, segments=3):
     }
 
 def point_to_bin(output, output_path):
+    # Convert to numpy and ensure it's on CPU
+    a = output
     output = output.cpu().numpy()
-    output.tofile(output_path)
+    # Reshape to (N, 3) format for [x,y,z]
+    points = output.reshape(-1, 3)
+    # Save to binary file
+    points.astype(np.float32).tofile(output_path)
+
+def read_kitti_bin(bin_path):
+    points = np.fromfile(bin_path, dtype=np.float32)
+    points = points.reshape(-1, 4)  # Reshape to (N, 4) - KITTI format
+    return points
 
 def evaluate_model(model, input_dir, output_dir, device="cuda:1"):
     model.to(device)
@@ -52,12 +62,12 @@ def evaluate_model(model, input_dir, output_dir, device="cuda:1"):
             filename = os.path.basename(test_file)
             point_dict = kitti_to_dict(test_file, device=device)
             # print(point_dict.keys())
-            # print(point_dict['feat'].shape)
+            print(point_dict['feat'].shape)
             
             start_time = time.time()
             output = model(point_dict)
-            # print(output.shape)
             end_time = time.time()
+            print(output.feat[:])
             
             total_time += (end_time - start_time)
             total_files += 1
@@ -73,23 +83,21 @@ def evaluate_model(model, input_dir, output_dir, device="cuda:1"):
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-    print("current device: ", torch.cuda.current_device())
-    print("count of GPUs: ", torch.cuda.device_count())
     
     if torch.cuda.device_count() != 1:
         sys.exit("Only one GPU is supported")
 
     
-    ckpt_dir = "/home/server01/js_ws/lidar_test/ckpt/best_model.pth"
-    input_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/test/0.bin"
-    output_dir = "/home/server01/js_ws/lidar_test/evaluate_output"
+    ckpt_dir = "/home/server01/js_ws/lidar_test/ckpt/best_model_v3.5.pth"
+    input_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti_4/train/0.bin"
+    # input_gt_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/gt/0.bin"
+    output_dir = "/home/server01/js_ws/lidar_test/evaluate_output/v3.5"
     
     model = Lidar4US(
         in_channels=4,  # coord + intensity
         drop_path=0.3,
-        block_depth=(2, 2, 2, 2, 2),
-        enc_channels=(32, 64, 128, 256, 512),
+        block_depth=(2, 2, 2, 4, 2),
+        enc_channels=(32, 64, 128, 512, 512),
         enc_n_heads=(2, 4, 8, 16, 32),
         enc_patch_size=(1024, 1024, 1024, 1024, 1024),
         stride=(2, 2, 2, 2),
@@ -98,21 +106,23 @@ def main():
         attn_drop=0.1,
         proj_drop=0.1,
         mlp_ratio=4,
-        dec_depths=(2, 2, 2, 2),
-        dec_n_head=(4, 4, 8, 2),
-        dec_patch_size=(1024, 1024, 1024, 1024),
-        dec_channels=(64, 64, 128, 256),
+        dec_depths=(2, 2, 2, 2, 2),
+        dec_n_head=(2, 4, 8, 16, 32 ),
+        dec_patch_size=(1024, 1024, 1024, 1024, 1024),
+        dec_channels=(128, 128, 128, 256, 512),
         train_decoder=True,
+        exp_hidden=128,
+        exp_out=64,
         order=("z", "z-trans", "hilbert", "hilbert-trans"),
         upsample_ratio=16,
         out_channel=3,
     )
     
     
+    
+    
     checkpoint = torch.load(ckpt_dir, map_location="cuda", weights_only=True)
-    print(checkpoint.keys())
     model.load_state_dict(checkpoint['model_state_dict'])
-    print("model set!")
     try:
         avg_inference_time = evaluate_model(model, input_dir, output_dir, device)
         print(f"Evaluation completed successfully!")

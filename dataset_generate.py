@@ -73,12 +73,12 @@ test_file_paths = test_file_paths_0930
 train_files = train_file_paths
 test_files = test_file_paths
 
-train_output_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/train"
-test_output_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/test"
-gt_output_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/GT"
-gt_test_output_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/GT_test"
+train_output_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti_4/train"
+test_output_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti_4/test"
+gt_output_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti_4/GT"
+gt_test_output_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti_4/GT_test"
 
-sparse_factor = 16
+sparse_factor = 4
   
 trainlen = process(train_files,train_output_dir,gt_output_dir,sparse_factor)
 testlen = process(test_files,test_output_dir,gt_test_output_dir,sparse_factor)
