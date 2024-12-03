@@ -1,7 +1,6 @@
 import torch
 import numpy as np
 from glob import glob
-from model.PTv3 import Point
 import random
 import os
 from multiprocessing import Pool

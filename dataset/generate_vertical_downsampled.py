@@ -80,7 +80,7 @@ def process(file_paths, train_dir, gt_dir, test_dir, gt_test_dir, validation_dir
 
     train_file_paths = file_paths[:num_train]
     test_file_paths = file_paths[num_train:num_train+num_test]
-    validation_file_paths = file_paths[num_train+num_test:]
+    validation_file_paths = file_paths[num_train+num_test:num_train+num_test+num_validation]
     
     # process train data
     for i in range(len(train_file_paths)):
