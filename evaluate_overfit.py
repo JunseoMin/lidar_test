@@ -9,7 +9,7 @@ import sys
 def load_kitti_bin(file_path):
     return np.fromfile(file_path, dtype=np.float32).reshape(-1, 4)
 
-def kitti_to_dict(file_path, device, grid_size=0.05, segments=3):
+def kitti_to_dict(file_path, device, grid_size=0.05, segments=1):
     raw_data = load_kitti_bin(file_path)
     coords = raw_data[:, :3]  # x, y, z
     intensity = raw_data[:, 3:4]  # intensity as a feature
@@ -89,7 +89,8 @@ def main():
 
     
     ckpt_dir = "/home/server01/js_ws/lidar_test/ckpt/best_model_v3.5.pth"
-    input_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/test/1000.bin"
+    # input_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/test/1000.bin"
+    input_dir = "/home/server01/js_ws/dataset/vertical_downsampled/train/2400.bin"
     # input_gt_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/gt/0.bin"
     output_dir = "/home/server01/js_ws/lidar_test/evaluate_output/v3.5"
     
@@ -131,7 +132,4 @@ def main():
         print(f"Evaluation failed with error: {str(e)}")
 
 if __name__ == '__main__':
-    try:
-        main()
-    except Exception as e:
-        print(f"Exception in main: {str(e)}")
+    main()

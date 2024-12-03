@@ -69,7 +69,9 @@ class HybridLoss(nn.Module):
         super().__init__()
         self.alpha = alpha
         self.chamfer = ChamferDistance()
-        self.emd = SamplesLoss(loss="sinkhorn", p=1, blur=0.01)
+        self.emd = SamplesLoss(loss="sinkhorn", p=1, blur=0.05)
+        self.emd_loss = 0
+        self.chamfer_loss = 0
         
     def forward(self, pred_points, gt_points):
         # Make tensors contiguous
@@ -81,11 +83,13 @@ class HybridLoss(nn.Module):
         gt_chamfer = gt_xyz.unsqueeze(0).contiguous()
         
         # Compute both losses
-        chamfer_loss = self.chamfer(pred_chamfer, gt_chamfer, bidirectional=True, point_reduction="mean")
+        chamfer_loss = self.chamfer(gt_chamfer, pred_chamfer, bidirectional=False, point_reduction="mean")
         emd_loss = self.emd(pred_xyz, gt_xyz)
         
         # Combine losses
         total_loss = self.alpha * chamfer_loss + (1 - self.alpha) * emd_loss
+        self.emd_loss = emd_loss
+        self.chamfer_loss = chamfer_loss
         
         return total_loss
 
@@ -97,10 +101,12 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
 
     for epoch in range(start_epoch, num_epochs + 1):
         total_loss = 0
+        emd_avg = 0
+        cd_avg = 0
         start_time = time.time()
         print(f"----- Epoch {epoch} start -----")
         
-        data_loader = tqdm(zip(train_dataset, gt_dataset), total=len(train_dataset), desc=f"Epoch {epoch}/{num_epochs}", colour = '#0000FF')
+        data_loader = tqdm(zip(train_dataset, gt_dataset), total=len(train_dataset), desc=f"Epoch {epoch}/{num_epochs}")
 
         for train_data, gt_data in data_loader:
             
@@ -114,12 +120,24 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
             optimizer.step()  # Update parameters
 
             total_loss += loss.item()
+            emd_avg += criterion.emd_loss.item()
+            cd_avg += criterion.chamfer_loss.item()
 
         avg_loss = total_loss / len(train_dataset)
-        print(f"Epoch {epoch}/{num_epochs}, Loss: {avg_loss:.4f}, Min Loss: {min_loss:.4f}, LR: {scheduler.get_last_lr()[0]:.6f}")        
+        emd_avg /= len(train_dataset)
+        cd_avg /= len(train_dataset)
+        
+        print(f"Epoch {epoch}/{num_epochs}, Loss: {avg_loss:.4f}, CD: {cd_avg:.4f}, EMD: {emd_avg:.4f}")        
+        print(f"Min Loss: {min_loss:.4f}, LR: {scheduler.get_last_lr()[0]:.6f}")
         print(f"Epoch {epoch} time: {time.time() - start_time:.2f} seconds")
 
         if avg_loss < min_loss:
+            if avg_loss < 0:
+                print(f"ERROR: Epoch {epoch} loss is negative: {avg_loss:.4f}")
+                scheduler.step()
+                print(f"================================")
+                continue
+            
             min_loss = avg_loss
             save_path = "/home/server01/js_ws/lidar_test/ckpt/best_model_v3.5.pth"
             torch.save({
@@ -142,7 +160,7 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
         print(f"Model saved at {save_path}")
 
         scheduler.step()
-        print(f"----- epoch {epoch} finished! -----")
+        print(f"================================")
     print("========== train complete ==========")
 
 if __name__ == '__main__':
@@ -174,20 +192,20 @@ if __name__ == '__main__':
         exp_hidden=128,
         exp_out=128,
         order=("z", "z-trans", "hilbert", "hilbert-trans"),
-        upsample_ratio=16,
+        upsample_ratio=4,
         out_channel=3,
     )
     
     # Define paths
-    train_file_paths = glob.glob("/home/server01/js_ws/dataset/sparse_pointclouds_kitti/train/*.bin")
-    gt_file_paths = glob.glob("/home/server01/js_ws/dataset/sparse_pointclouds_kitti/GT/*.bin")
+    train_file_paths = glob.glob("/home/server01/js_ws/dataset/vertical_downsampled/train/**/*.bin", recursive=True)
+    gt_file_paths = glob.glob("/home/server01/js_ws/dataset/vertical_downsampled/train_GT/**/*.bin", recursive=True)
 
     # Initialize dataset and dataloaders
     train_dataset = PointCloudDataset(train_file_paths)
     gt_dataset = PointCloudDataset(gt_file_paths)
     optimizer = torch.optim.AdamW(model.parameters(), lr=4e-4, weight_decay=1e-3)
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[30, 60, 100], gamma=0.5)
-    criterion = HybridLoss(alpha=0.2)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[20, 60, 80, 100], gamma=0.5) # 0.0004 0.0002 0.0001 0.00005
+    criterion = HybridLoss(alpha=0.3)
 
     if args.resume_from:
         ckptr = torch.load(args.resume_from, map_location=device)   # load to device(GPU)
@@ -203,4 +221,4 @@ if __name__ == '__main__':
         min_loss = float('inf')
         print("No checkpoint found. Starting training from scratch.")
 
-    train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterion, device, start_epoch=start_epoch, min_loss=min_loss, num_epochs=120)
+    train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterion, device, start_epoch=start_epoch, min_loss=min_loss, num_epochs=1200)
