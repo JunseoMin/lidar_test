@@ -89,7 +89,7 @@ def main():
 
     
     ckpt_dir = "/home/server01/js_ws/lidar_test/ckpt/best_model_v3.5.pth"
-    input_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/train/0.bin"
+    input_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/test/1000.bin"
     # input_gt_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/gt/0.bin"
     output_dir = "/home/server01/js_ws/lidar_test/evaluate_output/v3.5"
     
