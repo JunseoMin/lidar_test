@@ -173,7 +173,7 @@ if __name__ == '__main__':
     model = Lidar4US(
         in_channels=4,  # coord + intensity
         drop_path=0.3,
-        block_depth=(2, 2, 2, 4, 2),
+        block_depth=(2, 2, 2, 2, 2),
         enc_channels=(32, 64, 128, 256, 512),
         enc_n_heads=(2, 4, 8, 16, 32),
         enc_patch_size=(1024, 1024, 1024, 1024, 1024),
@@ -184,12 +184,12 @@ if __name__ == '__main__':
         proj_drop=0.1,
         mlp_ratio=4,
         dec_depths=(2, 2, 2, 2, 2),
-        dec_n_head=(2, 4, 8, 16, 32),
+        dec_n_head=(2, 2, 4, 8, 16),
         dec_patch_size=(1024, 1024, 1024, 1024, 1024),
-        dec_channels=(128, 128, 128, 256, 512),
+        dec_channels=(32, 64, 128, 256, 512),
         train_decoder=True,
         exp_hidden=128,
-        exp_out=128,
+        exp_out=64,
         order=("z", "z-trans", "hilbert", "hilbert-trans"),
         upsample_ratio=4,
         out_channel=3,
@@ -220,4 +220,4 @@ if __name__ == '__main__':
         min_loss = float('inf')
         print("No checkpoint found. Starting training from scratch.")
 
-    train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterion, device, start_epoch=start_epoch, min_loss=min_loss, num_epochs=1200)
+    train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterion, device, start_epoch=start_epoch, min_loss=min_loss, num_epochs=120)
