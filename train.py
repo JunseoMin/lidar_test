@@ -174,7 +174,7 @@ if __name__ == '__main__':
         in_channels=4,  # coord + intensity
         drop_path=0.3,
         block_depth=(2, 2, 2, 4, 2),
-        enc_channels=(32, 64, 128, 512, 512),
+        enc_channels=(32, 64, 128, 256, 512),
         enc_n_heads=(2, 4, 8, 16, 32),
         enc_patch_size=(1024, 1024, 1024, 1024, 1024),
         stride=(2, 2, 2, 2),
@@ -184,7 +184,7 @@ if __name__ == '__main__':
         proj_drop=0.1,
         mlp_ratio=4,
         dec_depths=(2, 2, 2, 2, 2),
-        dec_n_head=(2, 4, 8, 16, 32 ),
+        dec_n_head=(2, 4, 8, 16, 32),
         dec_patch_size=(1024, 1024, 1024, 1024, 1024),
         dec_channels=(128, 128, 128, 256, 512),
         train_decoder=True,
@@ -203,7 +203,7 @@ if __name__ == '__main__':
     train_dataset = PointCloudDataset(train_file_paths)
     gt_dataset = PointCloudDataset(gt_file_paths)
     optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-3)
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[20, 60, 80, 100], gamma=0.5) # 0.0002 0.0001 0.00005 0.000025
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[20, 40, 60, 80, 100], gamma=0.5) # 0.002 0.001 0.0005 0.00025 0.000125
     criterion = HybridLoss(alpha=0.3)
 
     if args.resume_from:
