@@ -14,7 +14,6 @@ import numpy as np
 
 from tqdm import tqdm
 
-# from sklearn.neighbors import NearestNeighbors
 
 def load_kitti_bin(file_path):
     return np.fromfile(file_path, dtype=np.float32).reshape(-1, 4)
@@ -139,7 +138,7 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
                 continue
             
             min_loss = avg_loss
-            save_path = "/home/server01/js_ws/lidar_test/ckpt/best_model_v3.5.pth"
+            save_path = "/home/server01/js_ws/lidar_test/ckpt/best_model_vertical_upsample.pth"
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -149,7 +148,7 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
             }, save_path)
             print(f"Best model saved at {save_path} with loss: {min_loss:.4f}")
 
-        save_path = f"/home/server01/js_ws/lidar_test/ckpt/latest_v3.5.pth"
+        save_path = f"/home/server01/js_ws/lidar_test/ckpt/latest_vertical_upsample.pth"
         torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -203,8 +202,8 @@ if __name__ == '__main__':
     # Initialize dataset and dataloaders
     train_dataset = PointCloudDataset(train_file_paths)
     gt_dataset = PointCloudDataset(gt_file_paths)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=4e-4, weight_decay=1e-3)
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[20, 60, 80, 100], gamma=0.5) # 0.0004 0.0002 0.0001 0.00005
+    optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-3)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[20, 60, 80, 100], gamma=0.5) # 0.0002 0.0001 0.00005 0.000025
     criterion = HybridLoss(alpha=0.3)
 
     if args.resume_from:
