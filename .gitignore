@@ -6,3 +6,4 @@
 # evaluate.py
 test.py
 *.bin
+train.txt
