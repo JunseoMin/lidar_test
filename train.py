@@ -14,7 +14,6 @@ import numpy as np
 
 from tqdm import tqdm
 
-
 def load_kitti_bin(file_path):
     return np.fromfile(file_path, dtype=np.float32).reshape(-1, 4)
 
@@ -80,9 +79,10 @@ class HybridLoss(nn.Module):
         # Reshape for Chamfer Distance
         pred_chamfer = pred_xyz.unsqueeze(0).contiguous()
         gt_chamfer = gt_xyz.unsqueeze(0).contiguous()
-        
         # Compute both losses
-        chamfer_loss = self.chamfer(gt_chamfer, pred_chamfer, bidirectional=False, point_reduction="mean")
+        chamfer_loss = self.chamfer(pred_chamfer, gt_chamfer, point_reduction="mean")
+        chamfer_loss += self.chamfer(gt_chamfer, pred_chamfer, point_reduction="mean") 
+        
         emd_loss = self.emd(pred_xyz, gt_xyz)
         
         # Combine losses
@@ -97,8 +97,8 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
     print("========== train start ==========")
     model.to(device)
     model.train()
-
     for epoch in range(start_epoch, num_epochs + 1):
+        
         total_loss = 0
         emd_avg = 0
         cd_avg = 0
@@ -158,6 +158,17 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
             }, save_path)
         print(f"Model saved at {save_path}")
 
+        if epoch == 60:
+            save_path = f"/home/server01/js_ws/lidar_test/ckpt/vertical_upsample_60.pth"
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'min_loss': min_loss
+            }, save_path)
+            print(f"Model saved at {save_path}")
+
         scheduler.step()
         print(f"================================")
     print("========== train complete ==========")
@@ -196,23 +207,32 @@ if __name__ == '__main__':
     )
     
     # Define paths
-    train_file_paths = glob.glob("/home/server01/js_ws/dataset/vertical_downsampled/train/**/*.bin", recursive=True)
-    gt_file_paths = glob.glob("/home/server01/js_ws/dataset/vertical_downsampled/train_GT/**/*.bin", recursive=True)
+    train_file_paths = glob.glob("/home/server01/js_ws/dataset/vertical_downsampled/train/*.bin", recursive=True)
+    gt_file_paths = glob.glob("/home/server01/js_ws/dataset/vertical_downsampled/train_GT/*.bin", recursive=True)
 
     # Initialize dataset and dataloaders
     train_dataset = PointCloudDataset(train_file_paths)
     gt_dataset = PointCloudDataset(gt_file_paths)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-3)
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[20, 40, 60, 80, 100], gamma=0.5) # 0.002 0.001 0.0005 0.00025 0.000125
-    criterion = HybridLoss(alpha=0.3)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-3)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[20,40,60,80,100], gamma=0.5) # 0.002 0.001 0.0005 0.00025 0.000125
+    criterion = HybridLoss(alpha=0.5)
 
     if args.resume_from:
         ckptr = torch.load(args.resume_from, map_location=device)   # load to device(GPU)
         model.load_state_dict(ckptr['model_state_dict'])
         model.to(device)
-        scheduler.load_state_dict(ckptr['scheduler_state_dict'])
+
         optimizer.load_state_dict(ckptr['optimizer_state_dict'])
+
         start_epoch = ckptr['epoch'] + 1
+        
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(
+            optimizer,
+            milestones=[60, 100],
+            gamma=0.5,
+            last_epoch=start_epoch - 1
+        )
+
         min_loss = ckptr['min_loss']
         print(f"Checkpoint loaded. Resuming from epoch {start_epoch} with min loss {min_loss:.4f}")
     else:
@@ -220,4 +240,4 @@ if __name__ == '__main__':
         min_loss = float('inf')
         print("No checkpoint found. Starting training from scratch.")
 
-    train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterion, device, start_epoch=start_epoch, min_loss=min_loss, num_epochs=120)
+    train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterion, device, start_epoch=start_epoch, num_epochs=120)
