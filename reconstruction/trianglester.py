@@ -22,13 +22,13 @@ class Triangle(Dict):
     def get_triangle(self):
         pass
 
-def calc_centroid():
+def calc_centroid(pcd):
     pass
 
-def calc_variance():
+def calc_variance(pcd):
     pass
 
-def get_label():
+def get_label(pcd):
     pass
 
 class TriangleGenerator():
@@ -40,6 +40,9 @@ class TriangleGenerator():
 
     def make_segmented(self,lidar_raw):
         segments = []
+
+        
+
 
         return segments
 

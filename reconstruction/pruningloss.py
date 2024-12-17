@@ -34,6 +34,7 @@ class PruingLoss(nn.Module):
         I_pruned: pruned data (GT)
         """
 
+        
         return 0
 
     def forward(self, low_ch_upsampled_raw, high_ch_raw):
@@ -50,7 +51,7 @@ class PruingLoss(nn.Module):
         # make data the list [A1,A2, ... ]
         high_clusters = self.generator.generate_clusterlist(high_ch_raw)
         upsampled_clusters = self.generator.generate_clusterlist(low_ch_upsampled_raw)
-        
+
         high_triangles = self.generator.triangulize(high_clusters)
         upsampled_triangles = self.generator.triangulize(upsampled_clusters)
 
