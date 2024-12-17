@@ -44,10 +44,10 @@ def load_lidar_scan(scan_path):
 def arg_parse():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Generate a ground truth LiDAR map from KITTI dataset.")
-    parser.add_argument('--pose', type=str, default="/home/junseo/datasets/kitti_odometry/gt_pose/dataset/poses/01.txt", help="Path to KITTI pose file.")
-    parser.add_argument('--velodyne', type=str, default="/home/junseo/datasets/kitti_odometry/data_odometry_velodyne/dataset/sequences/01/velodyne", help="Path to KITTI LiDAR scans folder.")
-    parser.add_argument('--calib', type=str, default="/home/junseo/datasets/kitti_odometry/data_odometry_calib/dataset/sequences/01/calib.txt", help="Path to calibration file.")
-    parser.add_argument('--output', type=str, default="/home/junseo/MPIL/implementations/lidar_sr/map/01.pcd", help="Output path for the ground truth map.")
+    parser.add_argument('--pose', type=str, default="/home/junseo/datasets/kitti_odometry/gt_pose/dataset/poses/08.txt", help="Path to KITTI pose file.")
+    parser.add_argument('--velodyne', type=str, default="/home/junseo/datasets/kitti_odometry/data_odometry_velodyne/dataset/sequences/08/velodyne", help="Path to KITTI LiDAR scans folder.")
+    parser.add_argument('--calib', type=str, default="/home/junseo/datasets/kitti_odometry/data_odometry_calib/dataset/sequences/08/calib.txt", help="Path to calibration file.")
+    parser.add_argument('--output', type=str, default="/home/junseo/MPIL/implementations/lidar_sr/map/08.pcd", help="Output path for the ground truth map.")
     return parser.parse_args()
 
 
@@ -90,7 +90,7 @@ def main():
     print(f"Ground Truth LiDAR Map Saved as '{args.output}'")
 
     # Visualize the map
-    o3d.visualization.draw_geometries([global_map])
+    # o3d.visualization.draw_geometries([global_map])
 
 
 if __name__ == '__main__':
