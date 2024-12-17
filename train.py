@@ -66,31 +66,21 @@ class HybridLoss(nn.Module):
     def __init__(self, alpha=0.2):
         super().__init__()
         self.alpha = alpha
-        self.chamfer = ChamferDistance()
-        self.emd = SamplesLoss(loss="sinkhorn", p=1, blur=0.05)
-        self.emd_loss = 0
-        self.chamfer_loss = 0
+        self.WD = SamplesLoss(loss='sinkhorn', p=2, blur=.001)
+        self.WD_loss = 0
         
     def forward(self, pred_points, gt_points):
         # Make tensors contiguous
         pred_xyz = pred_points["feat"][:, :3].contiguous()
         gt_xyz = gt_points["feat"][:, :3].contiguous()
         
-        # Reshape for Chamfer Distance
-        pred_chamfer = pred_xyz.unsqueeze(0).contiguous()
-        gt_chamfer = gt_xyz.unsqueeze(0).contiguous()
         # Compute both losses
-        chamfer_loss = self.chamfer(pred_chamfer, gt_chamfer, point_reduction="mean")
-        chamfer_loss += self.chamfer(gt_chamfer, pred_chamfer, point_reduction="mean") 
-        
-        emd_loss = self.emd(pred_xyz, gt_xyz)
+        WD_loss = self.WD(pred_xyz, gt_xyz)
         
         # Combine losses
-        total_loss = self.alpha * chamfer_loss + (1 - self.alpha) * emd_loss
-        self.emd_loss = emd_loss
-        self.chamfer_loss = chamfer_loss
+        self.WD_loss = WD_loss
         
-        return total_loss
+        return WD_loss
 
 
 def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterion, device, start_epoch=1, min_loss=float('inf'), num_epochs=120):
@@ -100,7 +90,8 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
     for epoch in range(start_epoch, num_epochs + 1):
         
         total_loss = 0
-        emd_avg = 0
+        
+        WD_avg = 0
         cd_avg = 0
         start_time = time.time()
         print(f"----- Epoch {epoch} start -----")
@@ -119,14 +110,14 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
             optimizer.step()  # Update parameters
 
             total_loss += loss.item()
-            emd_avg += criterion.emd_loss.item()
-            cd_avg += criterion.chamfer_loss.item()
+            
+            WD_avg += criterion.WD_loss.item()
 
         avg_loss = total_loss / len(train_dataset)
-        emd_avg /= len(train_dataset)
-        cd_avg /= len(train_dataset)
         
-        print(f"Epoch {epoch}/{num_epochs}, Loss: {avg_loss:.4f}, CD: {cd_avg:.4f}, EMD: {emd_avg:.4f}")        
+        WD_avg /= len(train_dataset)
+        
+        print(f"Epoch {epoch}/{num_epochs}, Loss: {avg_loss:.4f},EMD: {WD_avg:.4f}")        
         print(f"Min Loss: {min_loss:.4f}, LR: {scheduler.get_last_lr()[0]:.6f}")
         print(f"Epoch {epoch} time: {time.time() - start_time:.2f} seconds")
 
@@ -158,8 +149,19 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
             }, save_path)
         print(f"Model saved at {save_path}")
 
+        if epoch == 30:
+            save_path = f"/home/server01/js_ws/lidar_test/ckpt/vertical_upsample30.pth"
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'min_loss': min_loss
+            }, save_path)
+            print(f"Model saved at {save_path}")
+
         if epoch == 60:
-            save_path = f"/home/server01/js_ws/lidar_test/ckpt/vertical_upsample_60.pth"
+            save_path = f"/home/server01/js_ws/lidar_test/ckpt/vertical_upsample60.pth"
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -214,8 +216,8 @@ if __name__ == '__main__':
     train_dataset = PointCloudDataset(train_file_paths)
     gt_dataset = PointCloudDataset(gt_file_paths)
     optimizer = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-3)
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[20,40,60,80,100], gamma=0.5) # 0.002 0.001 0.0005 0.00025 0.000125
-    criterion = HybridLoss(alpha=0.5)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[60,80], gamma=0.5) # 0.002 0.001 0.0005 0.00025 0.000125
+    criterion = HybridLoss(alpha=0.)
 
     if args.resume_from:
         ckptr = torch.load(args.resume_from, map_location=device)   # load to device(GPU)
