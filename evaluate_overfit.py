@@ -62,13 +62,10 @@ def evaluate_model(model, input_dir, output_dir, device="cuda:1"):
         for test_file in test_files:
             filename = os.path.basename(test_file)
             point_dict = kitti_to_dict(test_file, device=device)
-            # print(point_dict.keys())
-            # print(point_dict['feat'].shape)
             
             start_time = time.time()
             output = model(point_dict)
             end_time = time.time()
-            # print(output.feat[:])
             
             total_time += (end_time - start_time)
             total_files += 1
@@ -89,9 +86,9 @@ def main():
         sys.exit("Only one GPU is supported")
 
     
-    ckpt_dir = "/home/server01/js_ws/lidar_test/ckpt/vertical_upsample_30.pth"
+    ckpt_dir = "/home/server01/js_ws/lidar_test/ckpt/latest_vertical_upsample.pth"
     # input_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/test/1000.bin"
-    input_dir = "/home/server01/js_ws/dataset/vertical_downsampled/test/1200.bin"
+    input_dir = "/home/server01/js_ws/dataset/vertical_downsampled/test/100.bin"
     # input_gt_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/gt/0.bin"
     output_dir = "/home/server01/js_ws/lidar_test/evaluate_output/vertical_upsample"
     model = Lidar4US(
