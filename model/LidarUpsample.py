@@ -445,7 +445,6 @@ class Embedding(PointModule):
         self.embed_channels = embed_channels
 
         # TODO: check remove spconv
-        # TODO: Lidar4US - do i have to...?(11/20)
         self.stem = PointSequential(
             conv=spconv.SubMConv3d(
                 in_channels,
@@ -747,7 +746,7 @@ class FeatureExpending(PointModule):
         #print(f"expending input feat shape: {point.feat.shape}")
         # seperate the feature into different channels
         feat = rearrange(point.feat, 'n c -> 1 c n')
-        #print(f"expending input feat shape(rearranged): {feat.shape}")
+        
         concated_feat = []
         
         for convset in self.conv1x1sets:
@@ -856,7 +855,7 @@ class Lidar4US(PointModule):
         
         self.expending = PointSequential()
         self.expending.add(FeatureExpending(
-            in_feat_channels=dec_channels[0],
+            in_feat_channels=dec_channels[0], # + in_channels
             c1 = exp_hidden,
             c2 = exp_out,
             upsample_ratio=upsample_ratio
@@ -1005,6 +1004,7 @@ class Lidar4US(PointModule):
 
     def forward(self, data_dict):
         point = Point(data_dict)
+        # point_raw_feat = point.feat
 
         point.serialization(self.order, shuffle_orders=True)
         point.sparsify()
@@ -1016,6 +1016,8 @@ class Lidar4US(PointModule):
 
         if self.train_decoder:
             point = self.decoder(descriptor)
+            # point.feat = torch.cat((point.feat, point_raw_feat), dim=1)  #skip connection
+            
             point = self.expending(point)
             point = self.fc(point)
             #print(f"fc output feat shape: {point.feat.shape}")
