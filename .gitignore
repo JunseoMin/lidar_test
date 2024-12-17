@@ -7,3 +7,4 @@
 test.py
 *.bin
 train.txt
+*.pcd

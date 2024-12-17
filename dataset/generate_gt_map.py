@@ -3,6 +3,8 @@ import open3d as o3d
 import os
 import argparse
 
+from tqdm import tqdm
+
 
 def load_calibration(calib_file):
     """Load the camera-to-LiDAR calibration matrix."""
@@ -51,14 +53,16 @@ def visualize_point_cloud(points):
 def arg_parse():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Generate a ground truth LiDAR map from KITTI dataset.")
-    parser.add_argument('--pose', type=str, default="poses/00.txt", help="Path to KITTI pose file.")
-    parser.add_argument('--velodyne', type=str, default="velodyne/00/velodyne", help="Path to KITTI LiDAR scans folder.")
-    parser.add_argument('--calib', type=str, default="calib.txt", help="Path to calibration file.")
-    parser.add_argument('--output', type=str, default="/home/server01/js_ws/dataset/odometry_dataset/GT_map/kitti_ground_truth_map.pcd", help="Output path for the ground truth map.")
+    parser.add_argument('--pose', type=str, default="/home/junseo/datasets/kitti_odometry/gt_pose/dataset/poses/00.txt", help="Path to KITTI pose file.")
+    parser.add_argument('--velodyne', type=str, default="/home/junseo/datasets/kitti_odometry/data_odometry_velodyne/dataset/sequences/00/velodyne", help="Path to KITTI LiDAR scans folder.")
+    parser.add_argument('--calib', type=str, default="/home/junseo/datasets/kitti_odometry/data_odometry_calib/dataset/sequences/00/calib.txt", help="Path to calibration file.")
+    parser.add_argument('--output', type=str, default="/home/junseo/MPIL/implementations/lidar_sr/map/gt_map.pcd", help="Output path for the ground truth map.")
     return parser.parse_args()
 
 
 def main():
+    print("Num o3d device:",o3d.core.cuda.device_count())
+    
     args = arg_parse()
 
     # Ensure all files and directories exist
@@ -78,7 +82,9 @@ def main():
     global_map = o3d.geometry.PointCloud()
 
     # Process each LiDAR scan
-    for i, pose in enumerate(poses_velo):
+    datas = tqdm(enumerate(poses_velo), total=len(poses_velo))
+    
+    for i, pose in datas:
         scan_path = os.path.join(args.velodyne, f"{i:06d}.bin")
         if not os.path.exists(scan_path):
             print(f"Warning: LiDAR scan file missing: {scan_path}")
@@ -91,17 +97,19 @@ def main():
         ones = np.ones((points.shape[0], 1))
         points_homogeneous = np.hstack((points, ones))  # Convert to homogeneous coordinates
         points_global = (pose @ points_homogeneous.T).T[:, :3]  # Apply pose transformation
-
+        
         # Extend the global map
         global_map.points.extend(o3d.utility.Vector3dVector(points_global))
 
-    # Optional: Downsample the map for efficiency
-    global_map = global_map.voxel_down_sample(voxel_size=0.1)
-    visualize_point_cloud(np.asarray(global_map.points))
+    print("map constructed!")        
 
     # Save the global map
     o3d.io.write_point_cloud(args.output, global_map)
     print(f"Ground Truth LiDAR Map Saved as '{args.output}'")
+
+
+    visualize_point_cloud(np.asarray(global_map.points))
+
 
 
 if __name__ == '__main__':
