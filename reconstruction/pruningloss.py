@@ -16,6 +16,12 @@ Notations:
     P_r : Lidar reconstructed
     P_gt : GT LiDAR (64ch)
     pose_gt: GT pose
+
+TODO:
+    1. class Triangle(?)
+    2. I_raw calculation
+    3. maximum clique function
+    4. reconstruction loss (query, map)
 """
 
 def dist(p1,p2):
@@ -44,7 +50,6 @@ class ReconstructLoss(nn.Module):
         L += self.uni(p_q)
         
         return L
-
 
 class PruingLoss(nn.Module):
     def __init__(self, ratio = 0.3 ,radius = 30):
