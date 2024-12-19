@@ -1,3 +1,4 @@
+# CUDA_VISIBLE_DEVICES=1 python3 evaluate_overfit.py
 import torch
 from model.LidarUpsample import Lidar4US, Point
 import numpy as np
@@ -9,7 +10,7 @@ import sys
 def load_kitti_bin(file_path):
     return np.fromfile(file_path, dtype=np.float32).reshape(-1, 4)
 
-def kitti_to_dict(file_path, device, grid_size=0.05, segments=3):
+def kitti_to_dict(file_path, device, grid_size=0.05, segments=1):
     raw_data = load_kitti_bin(file_path)
     coords = raw_data[:, :3]  # x, y, z
     intensity = raw_data[:, 3:4]  # intensity as a feature
@@ -61,13 +62,10 @@ def evaluate_model(model, input_dir, output_dir, device="cuda:1"):
         for test_file in test_files:
             filename = os.path.basename(test_file)
             point_dict = kitti_to_dict(test_file, device=device)
-            # print(point_dict.keys())
-            print(point_dict['feat'].shape)
             
             start_time = time.time()
             output = model(point_dict)
             end_time = time.time()
-            print(output.feat[:])
             
             total_time += (end_time - start_time)
             total_files += 1
@@ -88,16 +86,16 @@ def main():
         sys.exit("Only one GPU is supported")
 
     
-    ckpt_dir = "/home/server01/js_ws/lidar_test/ckpt/best_model_v3.5.pth"
-    input_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/test/1000.bin"
+    ckpt_dir = "/home/server01/js_ws/lidar_test/ckpt/latest_vertical_upsample.pth"
+    # input_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/test/1000.bin"
+    input_dir = "/home/server01/js_ws/dataset/vertical_downsampled/test/100.bin"
     # input_gt_dir = "/home/server01/js_ws/dataset/sparse_pointclouds_kitti/gt/0.bin"
-    output_dir = "/home/server01/js_ws/lidar_test/evaluate_output/v3.5"
-    
+    output_dir = "/home/server01/js_ws/lidar_test/evaluate_output/vertical_upsample"
     model = Lidar4US(
         in_channels=4,  # coord + intensity
         drop_path=0.3,
-        block_depth=(2, 2, 2, 4, 2),
-        enc_channels=(32, 64, 128, 512, 512),
+        block_depth=(2, 2, 2, 2, 2),
+        enc_channels=(32, 64, 128, 256, 512),
         enc_n_heads=(2, 4, 8, 16, 32),
         enc_patch_size=(1024, 1024, 1024, 1024, 1024),
         stride=(2, 2, 2, 2),
@@ -107,20 +105,19 @@ def main():
         proj_drop=0.1,
         mlp_ratio=4,
         dec_depths=(2, 2, 2, 2, 2),
-        dec_n_head=(2, 4, 8, 16, 32 ),
+        dec_n_head=(2, 2, 4, 8, 16),
         dec_patch_size=(1024, 1024, 1024, 1024, 1024),
-        dec_channels=(128, 128, 128, 256, 512),
+        dec_channels=(32, 64, 128, 256, 512),
         train_decoder=True,
         exp_hidden=128,
-        exp_out=128,
+        exp_out=64,
         order=("z", "z-trans", "hilbert", "hilbert-trans"),
-        upsample_ratio=16,
+        upsample_ratio=4,
         out_channel=3,
     )
     
-    
-    
     checkpoint = torch.load(ckpt_dir, map_location="cuda", weights_only=True)
+    print(checkpoint['epoch'])
     model.load_state_dict(checkpoint['model_state_dict'])
     try:
         avg_inference_time = evaluate_model(model, input_dir, output_dir, device)
@@ -131,7 +128,4 @@ def main():
         print(f"Evaluation failed with error: {str(e)}")
 
 if __name__ == '__main__':
-    try:
-        main()
-    except Exception as e:
-        print(f"Exception in main: {str(e)}")
+    main()
