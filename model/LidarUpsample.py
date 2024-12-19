@@ -20,7 +20,8 @@ import torch_scatter
 from einops import rearrange
 
 
-#PTv3 (not modified) ---------------------------------
+# Awsome PTv3 codes (not modified) ---------------------------------
+# Thanks to authors of PTv3!
 
 @torch.inference_mode()
 def offset2bincount(offset):

@@ -5,7 +5,7 @@ import numpy as np
 from trianglester import Triangle
 from geomloss import SamplesLoss
 
-from networkx import Graph
+import networkx as nx
 
 import open3d as o3d
 
@@ -20,10 +20,11 @@ Notations:
     pose_gt: GT pose
 
 TODO:
-    1. class Triangle(?)
-    2. I_raw calculation
+    1. class Triangle(?) -- DONE (12/19)
+    2. I_raw calculation -- DONE (12/19)
     3. maximum clique function
     4. reconstruction loss (query, map)
+    BIG5. !DEBUG!
 """
 
 def dist(p1,p2):
@@ -91,12 +92,18 @@ class ReconstructLoss(nn.Module):
         return L
 
 class PruingLoss(nn.Module):
-    def __init__(self, corr_threshold = 0.5, ratio = 0.3 ,radius = 30):
+    def __init__(
+                 self, eps = 0.3 , 
+                 corr_threshold = 0.5,
+                 ratio = 0.3,
+                 radius = 30
+                 ):
         super().__init__()
         self.L_rec = ReconstructLoss()
         self.r = radius
         self.ratio = ratio
         self.corr_threshold = corr_threshold
+        self.eps = eps
         self.model = model()    # semantic segmentation model initialize
     
     def set_map(self, map):
@@ -143,27 +150,33 @@ class PruingLoss(nn.Module):
 
     def _get_I_raw(self, query_gt):
         r"""
-        generate raw correspondence list I_raw
+        Generate raw correspondence list I_raw based on query and map triangles.
         """
-        I_raw = None
-        
+
+        # Extract labels and identify cluster boundaries
         labels = query_gt[:, -1]
-        label_changes = np.where(labels[:-1] != labels[1:])[0] + 1 
+        label_changes = np.where(labels[:-1] != labels[1:])[0] + 1
 
+        # Split query points into clusters and process them
         clusters = np.split(query_gt, label_changes)
-
-        clusters = self._calc_cluster(clusters)
+        clusters = self._calc_cluster(clusters)  # Process clusters to add centroids and covariance
         query_triangles = self._trianglize_query(clusters)
-        
-        del clusters
-        #calc I_raw
-        I_raw = []
 
-        for key,triangles in query_triangles.items():
-            for q_triangle in triangles:
-                for m_triangle in self.map_triangles[key]:
+        # Release memory for clusters
+        del clusters
+
+        # Initialize I_raw
+        I_raw = list()
+
+        # Match query triangles with map triangles and calculate correspondences
+        for key, q_triangles in query_triangles.items():
+            map_triangles = self.map_triangles.get(key, [])
+            for q_triangle in q_triangles:
+                for m_triangle in map_triangles:
                     if self._similar(q_triangle, m_triangle):
-                        I_raw.append((q_triangle, m_triangle))
+                        # Create correspondence tuple for each vertex
+                        correspondence = [(q_triangle[i], m_triangle[i]) for i in range(3)]
+                        I_raw.extend(correspondence)
 
         return I_raw
     
@@ -240,29 +253,69 @@ class PruingLoss(nn.Module):
 
         return cluster_data
             
-    def _get_I_pruned(self,I_raw):
+    def _get_I_pruned_map(self,I_raw):
         r"""
-        Calc maximum clique of I_raw correspondency
+        Calc maximum clique of I_raw correspondence
+        G = [V,E] V: correspondence of map cluster and query cluster edge difference function(vary) results 
+        input: cluster tuple list [(query cluster, map cluster) ... ]
+        output: I_pruned_map - list of map clusters that are part of the maximum clique
         """
+
+        G = nx.Graph()
+        for i, correspondence in enumerate(I_raw):
+            G.add_node(i, data=correspondence)
         
+        for i in range(len(I_raw)):
+            for j in range(i + 1, len(I_raw)):
+                if self._consistency_check(I_raw[i], I_raw[j]):
+                    G.add_edge(i, j)
+        cliques = list(nx.find_cliques(G))  
+        max_clique = max(cliques, key=len)
 
+        I_pruned_map = [G.nodes[node]["data"][1] for node in max_clique]
 
-        return I_pruned
+        return I_pruned_map
 
-    def triangle_loss(self, query, query_gt, pose):
+    def _consistency_check(self, corr1, corr2):
+        r"""
+        consistency check function
+        input(tuple) : correlation cluster corr := (cluster_query, cluster_map)
+            - cluster_query = [point, label, centroid, covariance]
+        """
+        query_diff = wasserstein_distance(corr1[0][2],corr1[0][3],corr2[0][2],corr2[0][3])
+        map_diff = wasserstein_distance(corr1[1][2],corr1[1][3],corr2[1][2],corr2[1][3])
+
+        diff = abs(query_diff - map_diff)
+        return diff < self.eps 
+
+    def _triangle_loss(self, query, query_gt, pose):
 
         assert isinstance(query_gt, np.ndarray), "ASSERT: input type shoud be ndarray"
         assert isinstance(query, np.ndarray), "ASSERT: input type shoud be ndarray"
         assert isinstance(pose, np.ndarray), "ASSERT: input type shoud be ndarray"
 
         P_q = self.model(query) # semantic segmented query pointcloud
+        P_q = self._calc_cluster(P_q)
 
         I_raw = self._get_I_raw(query_gt)
-        I_pruned = self._get_I_pruned(I_raw)
+        I_pruned_map = self._get_I_pruned_map(I_raw)
 
-        loss = self._calc_triangle_loss(P_q, I_pruned)
+        loss = self._calc_triangle_loss(P_q, I_pruned_map)
 
         return loss
+
+    def _calc_triangle_loss(self, P_q, I_pruned):
+        r"""
+        TODO: calc loss that I proposed!
+        
+        input: 
+            - I_pruned_map (list) : map clusters [map_cluster1, map cluster2 ... ]  
+            - P_q (dict) : semantic segmented queried pointcloud dictionary
+
+            cluster = {index: points, label, centroid, covariance}
+        """
+        
+        pass
 
     def forward(self, P_r, P_gt, pose_gt):
         r"""
@@ -272,7 +325,7 @@ class PruingLoss(nn.Module):
         """
 
         L_upsample = self.L_rec(P_r, P_gt)    # upsampling loss
-        L_tri = self.triangle_loss(P_r, P_gt, pose_gt)
+        L_tri = self._triangle_loss(P_r, P_gt, pose_gt)
 
         loss = L_upsample * self.ratio + L_tri * (1-self.ratio)
         return loss
