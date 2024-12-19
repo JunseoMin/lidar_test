@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-from trianglester import TriangleGenerator
+from trianglester import Triangle
 from geomloss import SamplesLoss
 
 from networkx import Graph
@@ -10,6 +10,8 @@ from networkx import Graph
 import open3d as o3d
 
 from math import sqrt
+from scipy.linalg import sqrtm
+
 
 r"""
 Notations:
@@ -39,6 +41,43 @@ def calc_covariance(points,centroid):
     return covariance_matrix
 
 
+def wasserstein_distance(mu1, sigma1, mu2, sigma2):
+    r"""
+    Calculate the 2-Wasserstein distance between two Gaussian distributions.
+    
+    Parameters:
+        mu1: Mean vector of the first distribution (1D numpy array)
+        sigma1: Covariance matrix of the first distribution (2D numpy array)
+        mu2: Mean vector of the second distribution (1D numpy array)
+        sigma2: Covariance matrix of the second distribution (2D numpy array)
+    
+    Returns:
+        Wasserstein distance (float)
+    """
+    # Compute the Euclidean distance between the means
+    mean_diff = np.linalg.norm(mu1 - mu2)**2
+    
+    # Compute the square root of the first covariance matrix
+    sigma1_sqrt = sqrtm(sigma1)
+    
+    # Ensure the result is real-valued (handle numerical instability)
+    if np.iscomplexobj(sigma1_sqrt):
+        sigma1_sqrt = sigma1_sqrt.real
+    
+    # Compute the matrix product for the covariance term
+    covariance_term = sqrtm(sigma1_sqrt @ sigma2 @ sigma1_sqrt)
+    
+    # Ensure the result is real-valued
+    if np.iscomplexobj(covariance_term):
+        covariance_term = covariance_term.real
+    
+    # Trace terms
+    trace_term = np.trace(sigma1 + sigma2 - 2 * covariance_term)
+    
+    # Wasserstein distance
+    wasserstein_dist = mean_diff + trace_term
+    return np.sqrt(wasserstein_dist)
+
 class ReconstructLoss(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -52,14 +91,12 @@ class ReconstructLoss(nn.Module):
         return L
 
 class PruingLoss(nn.Module):
-    def __init__(self, ratio = 0.3 ,radius = 30):
-        r"""
-        r: radious of a sphere
-        """
+    def __init__(self, corr_threshold = 0.5, ratio = 0.3 ,radius = 30):
         super().__init__()
         self.L_rec = ReconstructLoss()
         self.r = radius
         self.ratio = ratio
+        self.corr_threshold = corr_threshold
         self.model = model()    # semantic segmentation model initialize
     
     def set_map(self, map):
@@ -108,7 +145,6 @@ class PruingLoss(nn.Module):
         r"""
         generate raw correspondence list I_raw
         """
-
         I_raw = None
         
         labels = query_gt[:, -1]
@@ -119,33 +155,74 @@ class PruingLoss(nn.Module):
         clusters = self._calc_cluster(clusters)
         query_triangles = self._trianglize_query(clusters)
         
+        del clusters
         #calc I_raw
+        I_raw = []
 
-
+        for key,triangles in query_triangles.items():
+            for q_triangle in triangles:
+                for m_triangle in self.map_triangles[key]:
+                    if self._similar(q_triangle, m_triangle):
+                        I_raw.append((q_triangle, m_triangle))
 
         return I_raw
     
+    def _similar(self, q_triangle, m_triangle):
+        r"""
+        input:
+            - q_triangle: query triangle (list [cluster1, cluster2, cluster3])
+            - m_triangle: map triangle (list [cluster1, cluster2, cluster3])
+            i.e.) cluster = [points, label, centroid, covariance matrix]
+        output: boolean - return True if query and map are similar
+        """
+
+        for i in range(3):
+            if q_triangle[i][1] != m_triangle[i][1]:    # if the label isn't same
+                return False
+            wd = wasserstein_distance(q_triangle[2],q_triangle[-1],m_triangle[2],m_triangle[-1])
+            if wd > self.corr_threshold:
+                return False
+
+        return True
+    
     def _trianglize_query(self, clusters):
         r"""
-        Make triangle by cluster's centroid with 2 nearest neighbor clusters
-        input: cluster (dictionary)
-        output: triangle (dictionary : {main cluster's idx : {indexes of two nearest clusters}})
+        Make triangles by cluster's centroids with 2 nearest neighbor clusters.
+        Input: clusters (dictionary)
+        Output: triangles (dictionary: {tuple of sorted distances: [c1, c2, c3]})
         """
 
         triangles = {}
-        centroids = {key: val[2] for key, val in clusters.items()}
+        centroids = {key: val[2] for key, val in clusters.items()}  # Extract centroids
 
         for key, c_q in centroids.items():
-            distances = []
-            for other_key, c_other in centroids.items():
-                if key != other_key:
-                    distance = dist(c_q, c_other)
-                    distances.append((distance, other_key))
-            
-            distances.sort()
-            closest_two = distances[:2]
+            # Calculate distances to other centroids
+            distances = [
+                (dist(c_q, c_other), other_key)
+                for other_key, c_other in centroids.items()
+                if key != other_key
+            ]
 
-            triangles[key] = [key] + [item[1] for item in closest_two]
+            # Sort by distance and get the two closest clusters
+            distances.sort()
+            closest_two = [distances[0], distances[1]]  # [(distance, index), ...]
+
+            # Extract distances and sort them to form a unique key
+            d1 = closest_two[0]  # Distance to the first nearest cluster
+            d2 = closest_two[1]  # Distance to the second nearest cluster
+            d3 = dist(
+                centroids[closest_two[0][1]], centroids[closest_two[1][1]]
+            )  # Distance between the two nearest clusters
+
+            triangle_key = tuple(sorted([d1, d2, d3]))
+
+            # Add triangle to the dictionary
+            if triangle_key not in triangles:
+                triangles[triangle_key] = [
+                    clusters[triangle_key[0][1]],   # corresponds to sorted index
+                    clusters[triangle_key[1][1]],   
+                    clusters[triangle_key[2][1]]    
+                ]
 
         return triangles
 
@@ -164,7 +241,13 @@ class PruingLoss(nn.Module):
         return cluster_data
             
     def _get_I_pruned(self,I_raw):
-        pass
+        r"""
+        Calc maximum clique of I_raw correspondency
+        """
+        
+
+
+        return I_pruned
 
     def triangle_loss(self, query, query_gt, pose):
 
