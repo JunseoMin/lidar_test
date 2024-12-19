@@ -92,12 +92,18 @@ class ReconstructLoss(nn.Module):
         return L
 
 class PruingLoss(nn.Module):
-    def __init__(self, corr_threshold = 0.5, ratio = 0.3 ,radius = 30):
+    def __init__(
+                 self, eps = 0.3 , 
+                 corr_threshold = 0.5,
+                 ratio = 0.3,
+                 radius = 30
+                 ):
         super().__init__()
         self.L_rec = ReconstructLoss()
         self.r = radius
         self.ratio = ratio
         self.corr_threshold = corr_threshold
+        self.eps = eps
         self.model = model()    # semantic segmentation model initialize
     
     def set_map(self, map):
@@ -247,12 +253,12 @@ class PruingLoss(nn.Module):
 
         return cluster_data
             
-    def _get_I_pruned(self,I_raw):
+    def _get_I_pruned_map(self,I_raw):
         r"""
         Calc maximum clique of I_raw correspondence
         G = [V,E] V: correspondence of map cluster and query cluster edge difference function(vary) results 
         input: cluster tuple list [(query cluster, map cluster) ... ]
-        output: I_pruned - list of correspondences that are part of the maximum clique
+        output: I_pruned_map - list of map clusters that are part of the maximum clique
         """
 
         G = nx.Graph()
@@ -266,33 +272,50 @@ class PruingLoss(nn.Module):
         cliques = list(nx.find_cliques(G))  
         max_clique = max(cliques, key=len)
 
-        I_pruned = [G.nodes[node]["data"] for node in max_clique]
+        I_pruned_map = [G.nodes[node]["data"][1] for node in max_clique]
 
-        return I_pruned
+        return I_pruned_map
 
     def _consistency_check(self, corr1, corr2):
         r"""
-        TODO
         consistency check function
+        input(tuple) : correlation cluster corr := (cluster_query, cluster_map)
+            - cluster_query = [point, label, centroid, covariance]
         """
-        query_diff = abs(corr1[0] - corr2[0])
-        map_diff = abs(corr1[1] - corr2[1])
-        return query_diff <= 1 and map_diff <= 1 
+        query_diff = wasserstein_distance(corr1[0][2],corr1[0][3],corr2[0][2],corr2[0][3])
+        map_diff = wasserstein_distance(corr1[1][2],corr1[1][3],corr2[1][2],corr2[1][3])
 
-    def triangle_loss(self, query, query_gt, pose):
+        diff = abs(query_diff - map_diff)
+        return diff < self.eps 
+
+    def _triangle_loss(self, query, query_gt, pose):
 
         assert isinstance(query_gt, np.ndarray), "ASSERT: input type shoud be ndarray"
         assert isinstance(query, np.ndarray), "ASSERT: input type shoud be ndarray"
         assert isinstance(pose, np.ndarray), "ASSERT: input type shoud be ndarray"
 
         P_q = self.model(query) # semantic segmented query pointcloud
+        P_q = self._calc_cluster(P_q)
 
         I_raw = self._get_I_raw(query_gt)
-        I_pruned = self._get_I_pruned(I_raw)
+        I_pruned_map = self._get_I_pruned_map(I_raw)
 
-        loss = self._calc_triangle_loss(P_q, I_pruned)
+        loss = self._calc_triangle_loss(P_q, I_pruned_map)
 
         return loss
+
+    def _calc_triangle_loss(self, P_q, I_pruned):
+        r"""
+        TODO: calc loss that I proposed!
+        
+        input: 
+            - I_pruned_map (list) : map clusters [map_cluster1, map cluster2 ... ]  
+            - P_q (dict) : semantic segmented queried pointcloud dictionary
+
+            cluster = {index: points, label, centroid, covariance}
+        """
+        
+        pass
 
     def forward(self, P_r, P_gt, pose_gt):
         r"""
@@ -302,7 +325,7 @@ class PruingLoss(nn.Module):
         """
 
         L_upsample = self.L_rec(P_r, P_gt)    # upsampling loss
-        L_tri = self.triangle_loss(P_r, P_gt, pose_gt)
+        L_tri = self._triangle_loss(P_r, P_gt, pose_gt)
 
         loss = L_upsample * self.ratio + L_tri * (1-self.ratio)
         return loss
