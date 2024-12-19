@@ -5,7 +5,7 @@ import numpy as np
 from trianglester import Triangle
 from geomloss import SamplesLoss
 
-from networkx import Graph
+import networkx as nx
 
 import open3d as o3d
 
@@ -20,10 +20,11 @@ Notations:
     pose_gt: GT pose
 
 TODO:
-    1. class Triangle(?)
-    2. I_raw calculation
+    1. class Triangle(?) -- DONE (12/19)
+    2. I_raw calculation -- DONE (12/19)
     3. maximum clique function
     4. reconstruction loss (query, map)
+    BIG5. !DEBUG!
 """
 
 def dist(p1,p2):
@@ -143,27 +144,33 @@ class PruingLoss(nn.Module):
 
     def _get_I_raw(self, query_gt):
         r"""
-        generate raw correspondence list I_raw
+        Generate raw correspondence list I_raw based on query and map triangles.
         """
-        I_raw = None
-        
+
+        # Extract labels and identify cluster boundaries
         labels = query_gt[:, -1]
-        label_changes = np.where(labels[:-1] != labels[1:])[0] + 1 
+        label_changes = np.where(labels[:-1] != labels[1:])[0] + 1
 
+        # Split query points into clusters and process them
         clusters = np.split(query_gt, label_changes)
-
-        clusters = self._calc_cluster(clusters)
+        clusters = self._calc_cluster(clusters)  # Process clusters to add centroids and covariance
         query_triangles = self._trianglize_query(clusters)
-        
-        del clusters
-        #calc I_raw
-        I_raw = []
 
-        for key,triangles in query_triangles.items():
-            for q_triangle in triangles:
-                for m_triangle in self.map_triangles[key]:
+        # Release memory for clusters
+        del clusters
+
+        # Initialize I_raw
+        I_raw = list()
+
+        # Match query triangles with map triangles and calculate correspondences
+        for key, q_triangles in query_triangles.items():
+            map_triangles = self.map_triangles.get(key, [])
+            for q_triangle in q_triangles:
+                for m_triangle in map_triangles:
                     if self._similar(q_triangle, m_triangle):
-                        I_raw.append((q_triangle, m_triangle))
+                        # Create correspondence tuple for each vertex
+                        correspondence = [(q_triangle[i], m_triangle[i]) for i in range(3)]
+                        I_raw.extend(correspondence)
 
         return I_raw
     
@@ -242,12 +249,35 @@ class PruingLoss(nn.Module):
             
     def _get_I_pruned(self,I_raw):
         r"""
-        Calc maximum clique of I_raw correspondency
+        Calc maximum clique of I_raw correspondence
+        G = [V,E] V: correspondence of map cluster and query cluster edge difference function(vary) results 
+        input: cluster tuple list [(query cluster, map cluster) ... ]
+        output: I_pruned - list of correspondences that are part of the maximum clique
         """
-        
 
+        G = nx.Graph()
+        for i, correspondence in enumerate(I_raw):
+            G.add_node(i, data=correspondence)
+        
+        for i in range(len(I_raw)):
+            for j in range(i + 1, len(I_raw)):
+                if self._consistency_check(I_raw[i], I_raw[j]):
+                    G.add_edge(i, j)
+        cliques = list(nx.find_cliques(G))  
+        max_clique = max(cliques, key=len)
+
+        I_pruned = [G.nodes[node]["data"] for node in max_clique]
 
         return I_pruned
+
+    def _consistency_check(self, corr1, corr2):
+        r"""
+        TODO
+        consistency check function
+        """
+        query_diff = abs(corr1[0] - corr2[0])
+        map_diff = abs(corr1[1] - corr2[1])
+        return query_diff <= 1 and map_diff <= 1 
 
     def triangle_loss(self, query, query_gt, pose):
 
