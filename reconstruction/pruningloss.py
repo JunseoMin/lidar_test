@@ -104,7 +104,6 @@ class PruingLoss(nn.Module):
         self.ratio = ratio
         self.corr_threshold = corr_threshold
         self.eps = eps
-        self.model = model()    # semantic segmentation model initialize
     
     def set_map(self, map):
         r"""
@@ -192,7 +191,7 @@ class PruingLoss(nn.Module):
         for i in range(3):
             if q_triangle[i][1] != m_triangle[i][1]:    # if the label isn't same
                 return False
-            wd = wasserstein_distance(q_triangle[2],q_triangle[-1],m_triangle[2],m_triangle[-1])
+            wd = wasserstein_distance(q_triangle[i][2],q_triangle[i][-1],m_triangle[i][2],m_triangle[i][-1])
             if wd > self.corr_threshold:
                 return False
 
@@ -288,44 +287,64 @@ class PruingLoss(nn.Module):
         diff = abs(query_diff - map_diff)
         return diff < self.eps 
 
-    def _triangle_loss(self, query, query_gt, pose):
+    def _triangle_loss(self, query, query_gt):
 
         assert isinstance(query_gt, np.ndarray), "ASSERT: input type shoud be ndarray"
-        assert isinstance(query, np.ndarray), "ASSERT: input type shoud be ndarray"
-        assert isinstance(pose, np.ndarray), "ASSERT: input type shoud be ndarray"
+        assert isinstance(query, list), "ASSERT: input type shoud be list"
 
-        P_q = self.model(query) # semantic segmented query pointcloud
-        P_q = self._calc_cluster(P_q)
+        # P_q = self.model(query) # semantic segmented query pointcloud
+        # self.P_q = self._calc_cluster(P_q)
 
         I_raw = self._get_I_raw(query_gt)
         I_pruned_map = self._get_I_pruned_map(I_raw)
+        del(P_q,I_raw)
 
-        loss = self._calc_triangle_loss(P_q, I_pruned_map)
+        map_points = []
+        for cluster in I_pruned_map:
+            map_points.extend(cluster[0].tolist())
+
+        query = torch.tensor(query)
+        map_points = torch.tensor(map_points)
+
+        loss = self.L_rec(query, map_points)
 
         return loss
 
-    def _calc_triangle_loss(self, P_q, I_pruned):
+    # def _calc_triangle_loss(self, P_q :dict , I_pruned_map: list[dict]):
+    #     r"""
+    #     input: 
+    #         - I_pruned_map (list) : map clusters [map_cluster1, map cluster2 ... ]  
+    #         - P_q (dict) : semantic segmented queried pointcloud dictionary
+    #         cluster = {index: [points, label, centroid, covariance]}
+    #     output: similariy loss - similar cluster's reconstruction loss, distance of each cluster 
+    #     """
+    #     correspond = self._map_similar_clusters() #Calc by softmax
+    #     return loss
+
+    # def _map_similar_clusters(self):
+    #     r"""
+    #     mapping query cluster and map cluster by nearest centroid
+    #     """
+    #     num_query_clusters = len(self.P_q)
+    #     num_map_clusters = len(self.I_pruned_map)
+
+    #     correspond = []
+    #     for k_q, c_q in self.P_q.items():
+    #         distance = []
+    #         for i,c_m in enumerate(self.I_pruned_map):
+    #             distance.append((dist(c_q[2],c_m[2]),i))
+
+    #         distance.sort()
+    #         correspond.append((k_q , distance[0][1]))  # (query index, map_index)
+
+    #     return correspond
+
+
+    def forward(self, P_r, P_gt):
         r"""
-        TODO: calc loss that I proposed!
-        
-        input: 
-            - I_pruned_map (list) : map clusters [map_cluster1, map cluster2 ... ]  
-            - P_q (dict) : semantic segmented queried pointcloud dictionary
-
-            cluster = {index: points, label, centroid, covariance}
+        P_r : reconstructed pointcloud (not semantic segmented) [M,3]
+        P_gt: gt semantic segmented pointcloud [N,4]
         """
-        
-        pass
-
-    def forward(self, P_r, P_gt, pose_gt):
-        r"""
-        P_gt: gt semantic segmented pointcloud
-        pose_gt: GT pose
-        P_r : reconstructed pointcloud (not semantic segmented)
-        """
-
-        L_upsample = self.L_rec(P_r, P_gt)    # upsampling loss
-        L_tri = self._triangle_loss(P_r, P_gt, pose_gt)
-
-        loss = L_upsample * self.ratio + L_tri * (1-self.ratio)
-        return loss
+        # L_upsample = self.L_rec(P_r, P_gt)    # upsampling loss
+        L_tri = self._triangle_loss(P_r, P_gt.numpy())
+        return L_tri
