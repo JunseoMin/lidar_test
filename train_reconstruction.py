@@ -59,41 +59,33 @@ class PointCloudDataset(Dataset):
         return kitti_to_dict(file_path)
 
 
-def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterion, device, start_epoch=1, min_loss=float('inf'), num_epochs=120):
+def train_model_per_sequence(model, train_dataset, gt_dataset, optimizer, scheduler, criterion, device, start_epoch=1, min_loss=float('inf'), num_epochs=120):
     print("========== train start ==========")
     model.to(device)
     model.train()
     for epoch in range(start_epoch, num_epochs + 1):
         
         total_loss = 0
-        
         WD_avg = 0
-        cd_avg = 0
         start_time = time.time()
         print(f"----- Epoch {epoch} start -----")
         
         data_loader = tqdm(zip(train_dataset, gt_dataset), total=len(train_dataset), desc=f"Epoch {epoch}/{num_epochs}")
 
         for train_data, gt_data in data_loader:
-            
-            # train_data = {key: value.to(device) for key, value in train_data.items()}
-            # gt_data = {key: value.to(device) for key, value in gt_data.items()}
-            
             optimizer.zero_grad()
             pred = model(train_data)  # Forward pass
-            loss = criterion(pred, gt_data)  # Compute loss
+            loss = criterion(pred["feat"].cpu(), gt_data["feat"].cpu())  # Compute loss
             loss.backward()  # Backpropagation
             optimizer.step()  # Update parameters
 
             total_loss += loss.item()
-            
             WD_avg += criterion.WD_loss.item()
 
         avg_loss = total_loss / len(train_dataset)
-        
         WD_avg /= len(train_dataset)
         
-        print(f"Epoch {epoch}/{num_epochs}, Loss: {avg_loss:.4f},EMD: {WD_avg:.4f}")        
+        print(f"Epoch {epoch}/{num_epochs}, Loss: {avg_loss:.4f}, EMD: {WD_avg:.4f}")
         print(f"Min Loss: {min_loss:.4f}, LR: {scheduler.get_last_lr()[0]:.6f}")
         print(f"Epoch {epoch} time: {time.time() - start_time:.2f} seconds")
 
@@ -105,7 +97,7 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
                 continue
             
             min_loss = avg_loss
-            save_path = "/home/server01/js_ws/lidar_test/ckpt/best_model_vertical_upsample.pth"
+            save_path = f"/home/server01/js_ws/lidar_test/ckpt/best_model_vertical_upsample.pth"
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -124,28 +116,6 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
                 'min_loss': min_loss
             }, save_path)
         print(f"Model saved at {save_path}")
-
-        if epoch == 30:
-            save_path = f"/home/server01/js_ws/lidar_test/ckpt/vertical_upsample30.pth"
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-                'min_loss': min_loss
-            }, save_path)
-            print(f"Model saved at {save_path}")
-
-        if epoch == 60:
-            save_path = f"/home/server01/js_ws/lidar_test/ckpt/vertical_upsample60.pth"
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-                'min_loss': min_loss
-            }, save_path)
-            print(f"Model saved at {save_path}")
 
         scheduler.step()
         print(f"================================")
@@ -185,37 +155,43 @@ if __name__ == '__main__':
     )
     
     # Define paths
-    train_file_paths = glob.glob("/home/server01/js_ws/dataset/vertical_downsampled/train/*.bin", recursive=True)
-    gt_file_paths = glob.glob("/home/server01/js_ws/dataset/vertical_downsampled/train_GT/*.bin", recursive=True)
+    train_file_paths = f"/home/server01/js_ws/dataset/odometry_dataset/train/"
+    gt_file_paths = f"/home/server01/js_ws/dataset/odometry_dataset/gt/"
+    map_file_paths = f"/home/server01/js_ws/dataset/odometry_dataset/gt_map/"
 
-    # Initialize dataset and dataloaders
-    train_dataset = PointCloudDataset(train_file_paths)
-    gt_dataset = PointCloudDataset(gt_file_paths)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-3)
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[60,80], gamma=0.5) # 0.002 0.001 0.0005 0.00025 0.000125
-    criterion = PruingLoss()
+    train_dict = {}
+    gt_dict = {}
+    for seq in range(11):
+        train = glob.glob(train_file_paths + f"{seq:02d}/*.bin")
+        gt = glob.glob(gt_file_paths + f"{seq:02d}/*.bin")
+        train_dict[seq] = train
+        gt_dict[seq] = gt
 
-    if args.resume_from:
-        ckptr = torch.load(args.resume_from, map_location=device)   # load to device(GPU)
-        model.load_state_dict(ckptr['model_state_dict'])
-        model.to(device)
-
-        optimizer.load_state_dict(ckptr['optimizer_state_dict'])
-
-        start_epoch = ckptr['epoch'] + 1
+    # Initialize dataset and dataloaders for each sequence
+    for seq in range(4,5):
+        train_dataset = PointCloudDataset(train_dict[seq])
+        gt_dataset = PointCloudDataset(gt_dict[seq])
         
-        scheduler = torch.optim.lr_scheduler.MultiStepLR(
-            optimizer,
-            milestones=[60, 100],
-            gamma=0.5,
-            last_epoch=start_epoch - 1
-        )
+        map_file = load_kitti_bin(map_file_paths + f"{seq:02d}_map.bin")
+        optimizer = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-3)
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[60, 80], gamma=0.5)
+        criterion = PruingLoss()
+        criterion.set_map(map_file)
 
-        min_loss = ckptr['min_loss']
-        print(f"Checkpoint loaded. Resuming from epoch {start_epoch} with min loss {min_loss:.4f}")
-    else:
-        start_epoch = 1
-        min_loss = float('inf')
-        print("No checkpoint found. Starting training from scratch.")
+        if args.resume_from:
+            ckptr = torch.load(args.resume_from, map_location=device)
+            
+            model.load_state_dict(ckptr['model_state_dict'])
+            model.to(device)
+            optimizer.load_state_dict(ckptr['optimizer_state_dict'])
+            start_epoch = ckptr['epoch'] + 1
+            scheduler.load_state_dict(ckptr['scheduler_state_dict'])
+            min_loss = ckptr['min_loss']
+            
+            print(f"Checkpoint loaded. Resuming from epoch {start_epoch} with min loss {min_loss:.4f}")
+        else:
+            start_epoch = 1
+            min_loss = float('inf')
+            print(f"Starting training for sequence {seq} from scratch.")
 
-    train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterion, device, start_epoch=start_epoch, num_epochs=120)
+        train_model_per_sequence(model, train_dataset, gt_dataset, optimizer, scheduler, criterion, device, start_epoch=start_epoch, num_epochs=120)

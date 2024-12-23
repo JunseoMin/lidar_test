@@ -78,7 +78,7 @@ def generate_unique_filename(file_path, output_dir, idx):
     unique_name = f"{idx:06d}.bin"
     return os.path.join(output_dir, unique_name)
 
-def process_file(file_path, input_dir, gt_dir, sparse_factor, idx):
+def process_file(file_path, label_paths, input_dir, gt_dir, sparse_factor, idx):
     """
     Process a single .bin file:
     - Load raw points (64-channel)
@@ -90,7 +90,7 @@ def process_file(file_path, input_dir, gt_dir, sparse_factor, idx):
     raw_points = load_kitti_bin(file_path)
 
     # Derive label file path from the bin file path
-    label_file_path = file_path.replace('.bin', '.label')
+    label_file_path = label_paths
     semantic_label = load_kitti_label(label_file_path)  # shape (N,)
     if semantic_label.shape[0] != raw_points.shape[0]:
         raise ValueError(f"Mismatch between points and label length: {raw_points.shape[0]} vs {semantic_label.shape[0]}")
@@ -108,29 +108,34 @@ def process_file(file_path, input_dir, gt_dir, sparse_factor, idx):
 
     print(f"Processed: {file_path} -> GT: {gt_output_path} (with label), Sparse: {train_output_path}")
 
-def process(dataset_path_pattern, train_dir, gt_dir, sparse_factor):
+def process(dataset_path_pattern, label_path, train_dir, gt_dir, sparse_factor):
     """
     Process all .bin files matched by dataset_path_pattern into train_dir and gt_dir.
     """
-    file_paths = glob(dataset_path_pattern, recursive=True)
+    file_paths = glob(dataset_path_pattern)
+    label_paths = glob(label_path)
     file_paths.sort()
-    random.shuffle(file_paths)
+    label_paths.sort()
+    # random.shuffle(file_paths)
 
     for i, f in enumerate(file_paths):
-        process_file(file_path=f, input_dir=train_dir, gt_dir= gt_dir, sparse_factor=sparse_factor, idx=i)
+        print("current processing: ",f)
+        print("current processing: ",label_paths[i])
+        process_file(file_path=f,label_paths = label_paths[i], input_dir=train_dir, gt_dir= gt_dir, sparse_factor=sparse_factor, idx=i)
 
     return len(file_paths)
 
 
 # main
 sparse_factor = 4  # 64 channels -> 16 channels
-for i in range(12):
-    dataset_path = f"/home/server01/js_ws/dataset/odometry_dataset/dataset/sequences/{i:02d}/**/*.bin"
+for i in range():
+    dataset_path = f"/home/server01/js_ws/dataset/odometry_dataset/dataset/sequences/{i:02d}/velodyne/*.bin"
+    label_path = f"/home/server01/js_ws/dataset/odometry_dataset/dataset/sequences/{i:02d}/labels/*.label"
     # 동일 이름의 .label 파일이 존재한다고 가정
     # 예: 000000.bin -> 000000.label
     
     train_output_dir = f"/home/server01/js_ws/dataset/odometry_dataset/train/{i:02d}"
     gt_output_dir = f"/home/server01/js_ws/dataset/odometry_dataset/gt/{i:02d}"
 
-    dataset_len = process(dataset_path, train_output_dir, gt_output_dir, sparse_factor)
+    dataset_len = process(dataset_path, label_path, train_output_dir, gt_output_dir, sparse_factor)
     print(f"Sequence {i:02d} finished! Total processed frames: {dataset_len}")

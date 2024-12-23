@@ -43,82 +43,106 @@ def load_label(label_path):
     return semantic_label
 
 def arg_parse():
-    parser = argparse.ArgumentParser(description="Generate a semantic segmentation map from KITTI dataset.")
-    parser.add_argument('--pose', type=str, default="/home/junseo/datasets/kitti_odometry/gt_pose/dataset/poses/09.txt", help="Path to KITTI pose file.")
-    parser.add_argument('--velodyne', type=str, default="/home/junseo/datasets/kitti_odometry/data_odometry_velodyne/dataset/sequences/09/velodyne", help="Path to KITTI LiDAR scans folder.")
-    parser.add_argument('--labels', type=str, default="/home/junseo/datasets/kitti_odometry/data_odometry_labels/dataset/sequences/09/labels", help="Path to KITTI Label folder.")
-    parser.add_argument('--calib', type=str, default="/home/junseo/datasets/kitti_odometry/data_odometry_calib/dataset/sequences/09/calib.txt", help="Path to calibration file.")
-    parser.add_argument('--output', type=str, default="/home/junseo/MPIL/implementations/lidar_sr/map/09.bin", help="Output path for the semantic map .bin file.")
+    parser = argparse.ArgumentParser(description="Generate voxelized semantic maps from KITTI dataset in chunks.")
+    parser.add_argument('--dataset_path', type=str, default="/home/server01/js_ws/dataset/odometry_dataset/dataset/sequences",
+                        help="Path to KITTI dataset sequences folder")
+    parser.add_argument('--output_path', type=str, default="/home/server01/js_ws/dataset/odometry_dataset/GT_map",
+                        help="Output path for semantic maps.")
+    parser.add_argument('--voxel_size', type=float, default=0.05,
+                        help="Voxel size for down-sampling.")
+    parser.add_argument('--chunk_frames', type=int, default=100,
+                        help="Number of frames to accumulate before voxelizing.")
     return parser.parse_args()
 
-def main():
-    args = arg_parse()
-    # Calibration
-    T_cam2velo = load_calibration(args.calib)  
-    # Pose
-    poses = load_poses(args.pose)
+def voxel_downsample_with_label(points_np, labels_np, voxel_size):
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(points_np)
+    pcd_ds = pcd.voxel_down_sample(voxel_size)
+    ds_points = np.asarray(pcd_ds.points)
+    if ds_points.shape[0] == 0:
+        return ds_points, np.array([], dtype=np.float32)
+    pcd_tree = o3d.geometry.KDTreeFlann(pcd)
+    ds_labels = np.zeros((ds_points.shape[0],), dtype=np.float32)
+    for i, pt in enumerate(ds_points):
+        [_, idx, _] = pcd_tree.search_knn_vector_3d(pt, 1)
+        nearest_index = idx[0]
+        ds_labels[i] = labels_np[nearest_index]
+    return ds_points, ds_labels
 
-    # 파일 리스트
-    scan_files = sorted(os.listdir(args.velodyne))
+def process_sequence(sequence_id, args):
+    sequence_path = os.path.join(args.dataset_path, f"{sequence_id:02d}")
+    velodyne_path = os.path.join(sequence_path, "velodyne")
+    labels_path = os.path.join(sequence_path, "labels")
+    calib_file = os.path.join(sequence_path, "calib.txt")
+    poses_file = os.path.join(sequence_path, "poses.txt")
     
-    # 전체 맵을 담을 리스트
-    global_points = []
-    global_labels = []
+    if not os.path.exists(velodyne_path) or not os.path.exists(labels_path):
+        print(f"Skipping sequence {sequence_id:02d}: Missing data folder.")
+        return None
 
-    datas = tqdm(enumerate(scan_files), total=len(scan_files))
+    T_cam2velo = load_calibration(calib_file)
+    poses = load_poses(poses_file)
+
+    scan_files = sorted(os.listdir(velodyne_path))
+    global_points_list = []
+    global_labels_list = []
+
+    chunk_points = []
+    chunk_labels = []
+
+    datas = tqdm(enumerate(scan_files), total=len(scan_files), desc=f"Sequence {sequence_id:02d}")
     for i, scan_file in datas:
-        scan_path = os.path.join(args.velodyne, scan_file)
+        scan_path = os.path.join(velodyne_path, scan_file)
         label_file = scan_file.replace('.bin', '.label')
-        label_path = os.path.join(args.labels, label_file)
+        label_path = os.path.join(labels_path, label_file)
 
-        if not os.path.exists(scan_path):
-            print(f"Warning: LiDAR scan file missing: {scan_path}")
-            continue
-        if not os.path.exists(label_path):
-            print(f"Warning: Label file missing: {label_path}")
+        if not os.path.exists(scan_path) or not os.path.exists(label_path):
             continue
 
         points = load_lidar_scan(scan_path)
         semantic_label = load_label(label_path)
 
-        # Homogeneous
-        ones = np.ones((points.shape[0], 1))
+        ones = np.ones((points.shape[0], 1), dtype=np.float32)
         points_hom = np.hstack((points, ones))
 
-        # Velodyne->Camera->Global
         points_camera = (T_cam2velo @ points_hom.T).T
         points_global = (poses[i] @ points_camera.T).T[:, :3]
 
-        global_points.append(points_global)
-        global_labels.append(semantic_label)
+        chunk_points.append(points_global)
+        chunk_labels.append(semantic_label)
 
-    # 모든 프레임 포인트를 하나로 합침
-    global_points = np.vstack(global_points)
-    global_labels = np.concatenate(global_labels)
+        if (i + 1) % args.chunk_frames == 0 or (i + 1) == len(scan_files):
+            chunk_points_np = np.vstack(chunk_points)
+            chunk_labels_np = np.concatenate(chunk_labels)
 
-    # [x, y, z, label]
-    # x,y,z는 float32, label은 int32로 저장
-    output_data = np.hstack((global_points.astype(np.float32), global_labels[:, None].astype(np.int32)))
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
-    output_data.tofile(args.output)
-    print(f"Semantic Map Saved as '{args.output}' with shape {output_data.shape}")
+            ds_points, ds_labels = voxel_downsample_with_label(
+                chunk_points_np, chunk_labels_np, args.voxel_size
+            )
 
-    # 시각화
-    # label -> color 매핑을 위한 colormap 예시 (단순 랜덤 또는 규정된 colormap 사용 가능)
-    unique_labels = np.unique(global_labels)
-    # 임의의 랜덤 컬러 맵 (고정 시드)
-    np.random.seed(42)
-    max_label = unique_labels.max()
-    colormap = np.random.rand(max_label+1, 3)
+            global_points_list.append(ds_points)
+            global_labels_list.append(ds_labels)
 
-    colors = colormap[global_labels]
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(global_points)
-    pcd.colors = o3d.utility.Vector3dVector(colors)
+            chunk_points = []
+            chunk_labels = []
 
-    # Open3D로 시각화
-    o3d.visualization.draw_geometries([pcd])
+    global_points = np.vstack(global_points_list) if global_points_list else np.empty((0, 3), dtype=np.float32)
+    global_labels = np.concatenate(global_labels_list) if global_labels_list else np.empty((0,), dtype=np.float32)
 
+    output_data = np.hstack([
+        global_points.astype(np.float32),
+        global_labels.reshape(-1, 1).astype(np.float32)
+    ])
+
+    os.makedirs(args.output_path, exist_ok=True)
+    output_file = os.path.join(args.output_path, f"{sequence_id:02d}_map.bin")
+    output_data.tofile(output_file)
+    print(f"[Done] Semantic Map for Sequence {sequence_id:02d} saved to {output_file}")
+
+
+def main():
+    args = arg_parse()
+    for sequence_id in range(11):
+        process_sequence(sequence_id, args)
 
 if __name__ == '__main__':
     main()
