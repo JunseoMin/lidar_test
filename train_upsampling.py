@@ -129,7 +129,7 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
                 continue
             
             min_loss = avg_loss
-            save_path = "/home/server01/js_ws/lidar_test/ckpt/best_model_vertical_upsample.pth"
+            save_path = "/home/server01/js_ws/lidar_test/ckpt/best_model_vertical_upsampleAS_DAS_D_.pth"
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -139,7 +139,7 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
             }, save_path)
             print(f"Best model saved at {save_path} with loss: {min_loss:.4f}")
 
-        save_path = f"/home/server01/js_ws/lidar_test/ckpt/latest_vertical_upsample.pth"
+        save_path = f"/home/server01/js_ws/lidar_test/ckpt/latest_vertical_upsampleAS_DAS_D_.pth"
         torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -150,7 +150,7 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
         print(f"Model saved at {save_path}")
 
         if epoch == 30:
-            save_path = f"/home/server01/js_ws/lidar_test/ckpt/vertical_upsample30.pth"
+            save_path = f"/home/server01/js_ws/lidar_test/ckpt/vertical_upsample30AS_DAS_D_.pth"
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -161,7 +161,7 @@ def train_model(model, train_dataset, gt_dataset, optimizer, scheduler, criterio
             print(f"Model saved at {save_path}")
 
         if epoch == 60:
-            save_path = f"/home/server01/js_ws/lidar_test/ckpt/vertical_upsample60.pth"
+            save_path = f"/home/server01/js_ws/lidar_test/ckpt/vertical_upsample60AS_DAS_D_.pth"
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
