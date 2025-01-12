@@ -4,6 +4,31 @@ import os
 import argparse
 from tqdm import tqdm
 
+def inverse_se3(T):
+    """
+    Compute the inverse of an SE(3) transformation matrix.
+
+    Parameters:
+    T (numpy.ndarray): A 4x4 transformation matrix.
+
+    Returns:
+    numpy.ndarray: The inverse of the transformation matrix.
+    """
+    if T.shape != (4, 4):
+        raise ValueError("Input must be a 4x4 matrix.")
+    
+    R = T[:3, :3]  # Rotation matrix
+    t = T[:3, 3]   # Translation vector
+    
+    R_inv = R.T    # Transpose of the rotation matrix (R^T)
+    t_inv = -R_inv @ t  # Inverse translation
+    
+    T_inv = np.eye(4)
+    T_inv[:3, :3] = R_inv
+    T_inv[:3, 3] = t_inv
+    
+    return T_inv
+
 def load_calibration(calib_file):
     if not os.path.exists(calib_file):
         raise FileNotFoundError(f"Calibration file not found: {calib_file}")
@@ -46,9 +71,9 @@ def arg_parse():
     parser = argparse.ArgumentParser(description="Generate voxelized semantic maps from KITTI dataset in chunks.")
     parser.add_argument('--dataset_path', type=str, default="/home/server01/js_ws/dataset/odometry_dataset/dataset/sequences",
                         help="Path to KITTI dataset sequences folder")
-    parser.add_argument('--output_path', type=str, default="/home/server01/js_ws/dataset/odometry_dataset/GT_map",
+    parser.add_argument('--output_path', type=str, default="/home/server01/js_ws/dataset/odometry_dataset/semantic_map",
                         help="Output path for semantic maps.")
-    parser.add_argument('--voxel_size', type=float, default=0.05,
+    parser.add_argument('--voxel_size', type=float, default=0.1,
                         help="Voxel size for down-sampling.")
     parser.add_argument('--chunk_frames', type=int, default=100,
                         help="Number of frames to accumulate before voxelizing.")
@@ -90,6 +115,8 @@ def process_sequence(sequence_id, args):
     chunk_points = []
     chunk_labels = []
 
+    target_labels = {44, 50, 60, 80, 81, 71, 72 ,51}    #building, lane-marking, pole, traffic sign, trunk, fence, parking
+
     datas = tqdm(enumerate(scan_files), total=len(scan_files), desc=f"Sequence {sequence_id:02d}")
     for i, scan_file in datas:
         scan_path = os.path.join(velodyne_path, scan_file)
@@ -102,10 +129,14 @@ def process_sequence(sequence_id, args):
         points = load_lidar_scan(scan_path)
         semantic_label = load_label(label_path)
 
+        mask = np.isin(semantic_label, list(target_labels))
+        points = points[mask]
+        semantic_label = semantic_label[mask]
+
         ones = np.ones((points.shape[0], 1), dtype=np.float32)
         points_hom = np.hstack((points, ones))
 
-        points_camera = (T_cam2velo @ points_hom.T).T
+        points_camera = ((T_cam2velo) @ points_hom.T).T
         points_global = (poses[i] @ points_camera.T).T[:, :3]
 
         chunk_points.append(points_global)
@@ -138,10 +169,9 @@ def process_sequence(sequence_id, args):
     output_data.tofile(output_file)
     print(f"[Done] Semantic Map for Sequence {sequence_id:02d} saved to {output_file}")
 
-
 def main():
     args = arg_parse()
-    for sequence_id in range(11):
+    for sequence_id in range(0,15):
         process_sequence(sequence_id, args)
 
 if __name__ == '__main__':
