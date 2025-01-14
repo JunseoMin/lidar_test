@@ -225,7 +225,7 @@ void processPointCloud(const std::string &input_file,
         {
             uint32_t labelVal = uniqueLabels[i];
             // std::cout << labelVal <<std::endl;
-            if (labelVal != 50 && labelVal != 80 && labelVal != 81 && labelVal != 71) {
+            if (labelVal != 44 && labelVal != 50 && labelVal != 51 && labelVal!=60 && labelVal != 80 && labelVal != 81 && labelVal != 71 && labelVal != 72) {
                 continue; // Skip the rest of the loop iteration
             }
             // std::cout << labelVal;

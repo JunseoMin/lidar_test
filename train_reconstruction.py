@@ -119,6 +119,15 @@ def train_model_per_sequence(
             #    => spconv 등 내부 연산도 deviceTrain에서 진행
             pred = model(train_data)
 
+
+            if torch.isnan(pred["feat"]).any():
+                print("[WARN]: model output has NAN, skip")
+                print(pred.feat.item())                
+                pred = None
+                # Optional: this can help with fragmentation but will slow code
+                skiped += 1
+                return
+            
             # 2) pred["feat"]를 deviceLoss로 복사 (autograd 그래프 유지를 위해 detach()는 사용하지 않음)
             pred_feat_loss = pred["feat"].to(device_loss, non_blocking=True)
             gt_data_loss   = gt_data.to(device_loss, non_blocking=True)
@@ -185,7 +194,7 @@ if __name__ == '__main__':
         in_channels=4,  # coord + intensity
         drop_path=0.3,
         block_depth=(2, 2, 2, 2, 2),
-        enc_channels=(32, 64, 128, 256, 512),
+        enc_channels=(32, 64, 128, 256, 256),
         enc_n_heads=(2, 4, 8, 16, 32),
         enc_patch_size=(1024, 1024, 1024, 1024, 1024),
         stride=(2, 2, 2, 2),
@@ -194,16 +203,17 @@ if __name__ == '__main__':
         attn_drop=0.1,
         proj_drop=0.1,
         mlp_ratio=4,
-        dec_depths=(2, 2, 2, 2, 2),
-        dec_n_head=(2, 2, 4, 8, 16),
-        dec_patch_size=(1024, 1024, 1024, 1024, 1024),
-        dec_channels=(32, 64, 128, 256, 512),
+        dec_depths=(2, 4, 2, 2),
+        dec_n_head=(2, 8, 8, 16),
+        dec_patch_size=(256, 256, 256, 256),
+        dec_channels=(32, 64, 128, 128),
         train_decoder=True,
-        exp_hidden=128,
-        exp_out=64,
+        exp_hidden=64,
+        exp_out=32,
         order=("z", "z-trans", "hilbert", "hilbert-trans"),
-        upsample_ratio=1,
+        num_1x1s=4,
         out_channel=3,
+        n_clusters=4
     )
     
     # Define paths
@@ -225,34 +235,37 @@ if __name__ == '__main__':
         train += glob.glob(train_file_paths + f"{seq:02d}/*.bin")
         gt += glob.glob(gt_file_paths + f"{seq:02d}/*.bin")
     
-    train_dict['train'] = train
-    gt_dict['gt'] = gt
+    train_dict['train'] = train[:200]
+    gt_dict['gt'] = gt[:200]
+
+    print(train[10], train[20])
+
     ascii_art = pyfiglet.figlet_format("Hello, World!")
     print(ascii_art)
 
     # Initialize dataset and dataloaders for each sequence
-    for seq in range(2,11):
-        train_dataset = PointCloudDataset(train_dict['train'], device_train)
-        gt_dataset = PointCloudGTDataset(gt_dict['gt'], device_train)
+    train_dataset = PointCloudDataset(train_dict['train'], device_train)
+    gt_dataset = PointCloudGTDataset(gt_dict['gt'], device_train)
         
-        optimizer = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-3)
-        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[60], gamma=0.1)
-        criterion = SamplesLoss(loss='sinkhorn', p=2, blur=.002, reach=.2)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-3)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100], gamma=0.1)
+    criterion = SamplesLoss(loss='sinkhorn', p=2, blur=.001, reach=.2)
 
-        if args.resume_from:
-            ckptr = torch.load(args.resume_from, map_location=device)
-            
-            model.load_state_dict(ckptr['model_state_dict'])
-            model.to(device)
-            optimizer.load_state_dict(ckptr['optimizer_state_dict'])
-            start_epoch = ckptr['epoch'] + 1
-            scheduler.load_state_dict(ckptr['scheduler_state_dict'])
-            min_loss = ckptr['min_loss']
-            
-            print(f"Checkpoint loaded. Resuming from epoch {start_epoch} with min loss {min_loss:.4f}")
-        else:
-            start_epoch = 1
-            min_loss = float('inf')
-            print(f"Starting training for sequence {seq} from scratch.")
+    if args.resume_from:
+        ckptr = torch.load(args.resume_from, map_location=device)
+        
+        model.load_state_dict(ckptr['model_state_dict'])
+        model.to(device)
+        optimizer.load_state_dict(ckptr['optimizer_state_dict'])
+        start_epoch = ckptr['epoch'] + 1
+        scheduler.load_state_dict(ckptr['scheduler_state_dict'])
+        min_loss = ckptr['min_loss']
+        
+        print(f"Checkpoint loaded. Resuming from epoch {start_epoch} with min loss {min_loss:.4f}")
+    else:
+        start_epoch = 1
+        min_loss = float('inf')
+        print(f"Starting training for sequence {seq} from scratch.")
 
-        train_model_per_sequence(model, train_dataset, gt_dataset, optimizer, scheduler, criterion, device_train, device_loss, start_epoch=start_epoch, num_epochs=120)
+    train_model_per_sequence(model, train_dataset, gt_dataset, optimizer, scheduler, criterion, device_train, device_loss, start_epoch=start_epoch, num_epochs=120)
+    print(train[10], train[20])

@@ -18,7 +18,7 @@ import math
 import torch_scatter
 
 from einops import rearrange
-
+import copy
 
 # Awsome PTv3 codes (not modified) ---------------------------------
 # Thanks to authors of PTv3!
@@ -727,12 +727,12 @@ class FeatureExpending(PointModule):
     r"""
     Expand the featuremap to the upsample ratio with C2 channel and reshape
     """
-    def __init__(self, in_feat_channels, c1 , c2, upsample_ratio):
+    def __init__(self, in_feat_channels, c1 , c2, num_1x1s):
         super().__init__()
-        self.upsample_ratio = upsample_ratio
+        self.num_1x1s = num_1x1s
         
         self.conv1x1sets = nn.ModuleList()
-        for i in range(upsample_ratio):
+        for i in range(num_1x1s):
             conv_set = nn.Sequential(
                 nn.Conv1d(in_feat_channels, c1, kernel_size=1),
                 nn.BatchNorm1d(c1),
@@ -757,7 +757,7 @@ class FeatureExpending(PointModule):
         concated_feat = torch.cat(concated_feat, dim=1)
         
         #print(f"expending output feat shape: {concated_feat.shape}")
-        point.feat = rearrange(concated_feat, '1 (c r) n -> (r n) c' , r = self.upsample_ratio)    #rearrange the feature channel  [N , rC] -> [rN , C]
+        point.feat = rearrange(concated_feat, '1 (c r) n -> n (r c)' , r = self.num_1x1s)    #rearrange the feature channel  [N , rC] -> [rN , C]
         #print(f"expending output feat shape(rearranged): {point.feat.shape}")
         return point
     
@@ -801,11 +801,12 @@ class Lidar4US(PointModule):
                  dec_channels,
                  train_decoder = True,
                  order = ("z", "z-trans", "hilbert", "hilbert-trans"),
-                 upsample_ratio = 32,
+                 num_1x1s = 32,
                  out_channel=3,
                  fc_hidden=512,
                  exp_hidden=1024,
-                 exp_out=256
+                 exp_out=256,
+                 n_clusters = 4
                 ):
         
         super().__init__()
@@ -832,7 +833,22 @@ class Lidar4US(PointModule):
         assert all(ps > 0 for ps in enc_patch_size), "Patch sizes must be positive"
         assert all(ps > 0 for ps in dec_patch_size), "Patch sizes must be positive"
 
-        self.decoder = PointSequential()
+        self.n_cluster = n_clusters
+        self.parallel_decoder = nn.ModuleList([self.generate_decoder(drop_path,
+                              dec_depths,
+                              enc_channels,
+                              dec_channels,
+                              n_stage,
+                              dec_n_head,
+                              dec_patch_size,
+                              mlp_ratio,
+                              qkv_bias,
+                              qk_scale,
+                              attn_drop,
+                              proj_drop,) for _ in range(n_clusters) ])
+
+        
+
         self.generate_decoder(drop_path,
                               dec_depths,
                               enc_channels,
@@ -859,15 +875,23 @@ class Lidar4US(PointModule):
             in_feat_channels=dec_channels[0], # + in_channels
             c1 = exp_hidden,
             c2 = exp_out,
-            upsample_ratio=upsample_ratio
+            num_1x1s=num_1x1s
         ), name="expending")
         
         self.fc = PointSequential(
             FC(
-                in_channels=exp_out,
+                in_channels=dec_channels[0],
                 hidden_channels=fc_hidden,
                 out_channels=out_channel,
                 dropout=0.0
+            )
+        )
+
+        self.fc_descrip = PointSequential(
+            FC(
+                in_channels=enc_channels[-1],
+                hidden_channels=enc_channels[-1] * 2,
+                out_channels=dec_channels[-1]
             )
         )
         
@@ -965,6 +989,7 @@ class Lidar4US(PointModule):
                          attn_drop,
                          proj_drop,
                          ):
+        decoder = PointSequential()
         dec_drop_path = [ x.item() for x in torch.linspace(0, drop_path, sum(dec_depths)) ]
         dec_channels = list(dec_channels) + [enc_channels[-1]]
         for stage in reversed(range(0,n_stage - 1)):
@@ -972,7 +997,7 @@ class Lidar4US(PointModule):
 
             _dec_drop_path.reverse()
             dec = PointSequential()
-
+            print(stage)
             dec.add(
                 SerializedUnpooling(
                         in_channels=dec_channels[stage + 1],
@@ -1001,7 +1026,9 @@ class Lidar4US(PointModule):
                         ),
                         name=f"block{i}",
                     )
-            self.decoder.add(module=dec, name=f"dec{stage}")
+            decoder.add(module=dec, name=f"dec{stage}")
+        
+        return decoder
 
     def forward(self, data_dict):
         point = Point(data_dict)
@@ -1013,15 +1040,21 @@ class Lidar4US(PointModule):
         #print(f"embedding input feat shape: {point.feat.shape}")
         point = self.embedding(point)
         #print(f"embedding output feat shape: {point.feat.shape}")
-        descriptor = self.encoder(point)
+        point = self.encoder(point)
 
-        if self.train_decoder:
-            point = self.decoder(descriptor)
-            # point.feat = torch.cat((point.feat, point_raw_feat), dim=1)  #skip connection
-            
-            point = self.expending(point)
-            point = self.fc(point)
-            #print(f"fc output feat shape: {point.feat.shape}")
-            return point
+        split_points = torch.chunk(point.feat, self.n_clusters, dim=1)  # 32 채널을 n_clusters로 나눔
 
-        return descriptor
+        parallel_outputs = []
+        for dec,split_point in zip(self.parallel_decoder, split_points):
+            copy_point = Point(split_point)
+            out = dec(copy_point)
+
+            out = self.fc(out)
+
+            parallel_outputs.append(out.feat)
+
+        point = torch.cat(parallel_outputs, dim=0)
+        print(f"output feat shape: {point.shape}")
+        
+        
+        return point

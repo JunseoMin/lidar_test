@@ -1,12 +1,13 @@
 #!/bin/bash
 
-# 명령어를 반복 실행하는 스크립트
 echo "Running process_point_cloud..."
 python3 /home/server01/js_ws/lidar_test/dataset/generate_gt_map.py
 
+# save covariance and centroids of clusters
 echo "Running process_point_cloud..."
 /home/server01/js_ws/lidar_test/reconstruction/build/bin/process_point_cloud "a" "a" "a"
 
+# 명령어를 반복 실행하는 스크립트
 echo "Running inlier_gt_generator..."
 # 기본 경로 설정
 POSES_PATH="/home/server01/js_ws/dataset/odometry_dataset/dataset/sequences/00/poses.txt"
@@ -16,7 +17,7 @@ GT_MAP_BASE="/home/server01/js_ws/dataset/odometry_dataset/semantic_map"
 OUTPUT_BASE="/home/server01/js_ws/dataset/odometry_dataset/reconstruction_gt"
 CALIB_BASE="/home/server01/js_ws/dataset/odometry_dataset/dataset/sequences"
 
-# 11번 반복 실행
+# generate GT datset FOR tran
 for i in $(seq -w 0 10); do
     echo "Running for sequence $i"
     /home/server01/js_ws/lidar_test/dataset/build/inlier_gt_generator \
