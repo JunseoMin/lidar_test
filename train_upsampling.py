@@ -215,7 +215,7 @@ if __name__ == '__main__':
     # Initialize dataset and dataloaders
     train_dataset = PointCloudDataset(train_file_paths)
     gt_dataset = PointCloudDataset(gt_file_paths)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-3)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-3)
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[60,80], gamma=0.5) # 0.002 0.001 0.0005 0.00025 0.000125
     criterion = HybridLoss(alpha=0.)
 

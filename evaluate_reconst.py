@@ -188,16 +188,14 @@ def main():
         attn_drop=0.1,
         proj_drop=0.1,
         mlp_ratio=4,
-        dec_depths=(2, 2, 2, 4, 2),
-        dec_n_head=(2, 2, 4, 8, 16),
-        dec_patch_size=(1024, 1024, 1024, 1024, 1024),
-        dec_channels=(32, 64, 128, 256, 512),
+        dec_depths=(2, 2, 2, 2),
+        dec_n_head=(2, 4, 8, 16),
+        dec_patch_size=(1024, 1024, 1024, 1024),
+        dec_channels=(32, 64, 128, 256),
         train_decoder=True,
-        exp_hidden=64,
-        exp_out=32,
         order=("z", "z-trans", "hilbert", "hilbert-trans"),
-        num_1x1s=4,
-        out_channel=3,
+        out_channel = 3,
+        fc_hidden = 32,
     )
     
     checkpoint = torch.load(ckpt_dir, map_location="cuda", weights_only=True)

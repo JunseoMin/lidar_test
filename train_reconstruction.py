@@ -194,7 +194,7 @@ if __name__ == '__main__':
         in_channels=4,  # coord + intensity
         drop_path=0.3,
         block_depth=(2, 2, 2, 2, 2),
-        enc_channels=(32, 64, 128, 256, 256),
+        enc_channels=(32, 64, 128, 256, 512),
         enc_n_heads=(2, 4, 8, 16, 32),
         enc_patch_size=(1024, 1024, 1024, 1024, 1024),
         stride=(2, 2, 2, 2),
@@ -203,17 +203,14 @@ if __name__ == '__main__':
         attn_drop=0.1,
         proj_drop=0.1,
         mlp_ratio=4,
-        dec_depths=(2, 4, 2, 2),
-        dec_n_head=(2, 8, 8, 16),
-        dec_patch_size=(256, 256, 256, 256),
-        dec_channels=(32, 64, 128, 128),
+        dec_depths=(2, 2, 2, 2),
+        dec_n_head=(2, 4, 8, 16),
+        dec_patch_size=(1024, 1024, 1024, 1024),
+        dec_channels=(32, 64, 128, 256),
         train_decoder=True,
-        exp_hidden=64,
-        exp_out=32,
         order=("z", "z-trans", "hilbert", "hilbert-trans"),
-        num_1x1s=4,
-        out_channel=3,
-        n_clusters=4
+        out_channel = 3,
+        fc_hidden = 32,
     )
     
     # Define paths
@@ -235,12 +232,12 @@ if __name__ == '__main__':
         train += glob.glob(train_file_paths + f"{seq:02d}/*.bin")
         gt += glob.glob(gt_file_paths + f"{seq:02d}/*.bin")
     
-    train_dict['train'] = train[:200]
-    gt_dict['gt'] = gt[:200]
+    train_dict['train'] = train
+    gt_dict['gt'] = gt
 
     print(train[10], train[20])
 
-    ascii_art = pyfiglet.figlet_format("Hello, World!")
+    ascii_art = pyfiglet.figlet_format("Hello World!")
     print(ascii_art)
 
     # Initialize dataset and dataloaders for each sequence

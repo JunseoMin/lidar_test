@@ -20,9 +20,17 @@ import torch_scatter
 from einops import rearrange
 import copy
 
+import numpy as np
+
 # Awsome PTv3 codes (not modified) ---------------------------------
 # Thanks to authors of PTv3!
+"""
+Point Transformer - V3 Mode1
+Pointcept detached version
 
+Author: Xiaoyang Wu (xiaoyang.wu.cs@gmail.com)
+Please cite our work if the code is helpful to you.
+"""
 @torch.inference_mode()
 def offset2bincount(offset):
     return torch.diff(
@@ -781,67 +789,28 @@ class FC(nn.Module):
         
         return x
 
-class Lidar4US(PointModule):
+class PointTransformerEncoder(PointModule):
     def __init__(self, 
-                 in_channels,
-                 drop_path,
-                 block_depth,
-                 enc_channels,
-                 enc_n_heads,
-                 enc_patch_size,
+                 drop_path, 
+                 n_stage,
+                 enc_block_depth, 
+                 enc_channels, 
+                 enc_n_heads:tuple,
+                 enc_patch_size, 
                  qkv_bias, 
                  qk_scale, 
-                 attn_drop, 
+                 attn_drop , 
                  proj_drop, 
                  mlp_ratio, 
-                 stride,
-                 dec_depths,
-                 dec_n_head,
-                 dec_patch_size,
-                 dec_channels,
-                 train_decoder = True,
-                 order = ("z", "z-trans", "hilbert", "hilbert-trans"),
-                 out_channel=3,
-                 fc_hidden=64,
-                ):
-        
+                 stride:tuple,
+                 order,
+                 in_channels,
+                 condition_out_channel,
+                 condition_hidden_channel
+                 ):
         super().__init__()
-        n_stage = len(block_depth)
+
         self.order = order
-        self.encoder = PointSequential()
-        self.train_decoder = train_decoder
-        self.generate_encoder(drop_path, 
-                              n_stage,
-                              block_depth, 
-                              enc_channels, 
-                              enc_n_heads,
-                              enc_patch_size, 
-                              qkv_bias, 
-                              qk_scale, 
-                              attn_drop, 
-                              proj_drop, 
-                              mlp_ratio, 
-                              stride
-                              )
-
-        assert len(enc_channels) == n_stage, "Encoder channels must match number of stages"
-        assert len(stride) == n_stage - 1, "Stride must match number of stages - 1"
-        assert all(ps > 0 for ps in enc_patch_size), "Patch sizes must be positive"
-        assert all(ps > 0 for ps in dec_patch_size), "Patch sizes must be positive"
-
-        self.decoder = self.generate_decoder(drop_path,
-                              dec_depths,
-                              enc_channels,
-                              dec_channels,
-                              n_stage,
-                              dec_n_head,
-                              dec_patch_size,
-                              mlp_ratio,
-                              qkv_bias,
-                              qk_scale,
-                              attn_drop,
-                              proj_drop,
-                              )
 
         self.embedding = Embedding(
             in_channels=in_channels,
@@ -849,37 +818,14 @@ class Lidar4US(PointModule):
             norm_layer=partial(nn.BatchNorm1d, eps=1e-3, momentum=0.01),
             act_layer=nn.GELU,
         )
-        
-        self.fc = PointSequential(
-            FC(
-                in_channels=dec_channels[0],
-                hidden_channels=fc_hidden,
-                out_channels=out_channel,
-                dropout=0.0
-            )
-        )
-        
-    def generate_encoder(self, 
-                         drop_path, 
-                         n_stage,
-                         block_depth, 
-                         enc_channels, 
-                         enc_n_heads:tuple,
-                         enc_patch_size, 
-                         qkv_bias, 
-                         qk_scale, 
-                         attn_drop , 
-                         proj_drop, 
-                         mlp_ratio, 
-                         stride:tuple ):
-        
-        enc_drop_path = [x.item() for x in torch.linspace(0, drop_path, sum(block_depth))]
+    
+        enc_drop_path = [x.item() for x in torch.linspace(0, drop_path, sum(enc_block_depth))]
         for stage in range(n_stage):
-            _enc_drop_path = enc_drop_path[sum(block_depth[:stage]):sum(block_depth[:stage + 1])]
+            _enc_drop_path = enc_drop_path[sum(enc_block_depth[:stage]):sum(enc_block_depth[:stage + 1])]
             enc = PointSequential()
 
             if stage == 0:
-                for i in range(block_depth[stage]):
+                for i in range(enc_block_depth[stage]):
                     enc.add(
                         Block(
                             channels=enc_channels[stage],
@@ -916,7 +862,7 @@ class Lidar4US(PointModule):
                     name="down",
                 )
 
-                for i in range(block_depth[stage]):
+                for i in range(enc_block_depth[stage]):
                     enc.add(
                         Block(
                             channels=enc_channels[stage],
@@ -938,22 +884,42 @@ class Lidar4US(PointModule):
                 if len(enc) != 0:
                     self.encoder.add(module=enc, name=f"enc{stage}")
 
+        self.fc = PointSequential(FC(
+            enc_channels[-1],
+            hidden_channels=condition_hidden_channel,
+            out_channels=condition_out_channel
+        ))
 
-    def generate_decoder(self,
-                         drop_path,
-                         dec_depths,
-                         enc_channels,
-                         dec_channels,
-                         n_stage,
-                         dec_n_head:tuple,
-                         dec_patch_size:tuple,
-                         mlp_ratio,
-                         qkv_bias,
-                         qk_scale,
-                         attn_drop,
-                         proj_drop,
-                         ):
-        decoder = PointSequential()
+    def forward(self, data_dict):
+        point = Point(data_dict)
+
+        point.serialization(self.order, shuffle_orders=True)
+        point.sparsify()
+        
+        point = self.embedding(point)
+        condition = self.encoder(point)
+        return self.fc(condition)
+
+class PointTransformerDecoder(PointModule):
+    def __init__(self,
+                 drop_path,
+                 dec_depths,
+                 enc_channels,
+                 dec_channels,
+                 n_stage,
+                 dec_n_head:tuple,
+                 dec_patch_size:tuple,
+                 mlp_ratio,
+                 qkv_bias,
+                 qk_scale,
+                 attn_drop,
+                 proj_drop,
+                 time_out_ch,
+                 condition_out_channel
+                 ):
+        super().__init__()
+
+        self.decoder = PointSequential()
         dec_drop_path = [ x.item() for x in torch.linspace(0, drop_path, sum(dec_depths)) ]
         dec_channels = list(dec_channels) + [enc_channels[-1]]
         for stage in reversed(range(0,n_stage - 1)):
@@ -964,7 +930,7 @@ class Lidar4US(PointModule):
             print(stage)
             dec.add(
                 SerializedUnpooling(
-                        in_channels=dec_channels[stage + 1],
+                        in_channels=dec_channels[stage + 1] + time_out_ch + condition_out_channel,
                         skip_channels=enc_channels[stage],
                         out_channels=dec_channels[stage],
                         norm_layer=partial(nn.BatchNorm1d, eps=1e-3, momentum=0.01),
@@ -990,49 +956,189 @@ class Lidar4US(PointModule):
                         ),
                         name=f"block{i}",
                     )
-            decoder.add(module=dec, name=f"dec{stage}")
-        
-        return decoder
-
-    def get_encoding_loss(self):
-        
-        pass
-
-    def get_loss(self):
-        
-        pass
-
-    def noising_step(self,point,t):
-        # noise original lidar input
-
-        pass
+            self.decoder.add(module=dec, name=f"dec{stage}")
     
-    def sinusoidal_time_embedding(self, timesteps, embedding_dim):
-        """
-        Create sinusoidal positional embeddings for timesteps.
-        """
-        device = timesteps.device
-        half_dim = embedding_dim // 2
-        freqs = torch.exp(-torch.arange(half_dim, dtype=torch.float32, device=device) * 
-                          torch.log(torch.tensor(10000.0)) / half_dim)
-        args = timesteps[:, None] * freqs[None, :]
-        embedding = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
-        return embedding
+    def forward(self, points, latent_z, time_embedding):
+        latent_z = latent_z.unsqueeze(1).expand(-1, points.size(1), -1)
+        time_embedding = time_embedding.unsqueeze(1).expand(-1, points.size(1), -1)
 
-
-    def forward(self, data_dict, return_encoder=False):
-        point = Point(data_dict)
-
-        point.serialization(self.order, shuffle_orders=True)
-        point.sparsify()
+        x = torch.cat([points, latent_z, time_embedding], dim =-1)
+        print(f"[Decoder] x's shape: {x.shape}")
+        output = self.decoder(x)
         
-        point = self.embedding(point)
-        point = self.encoder(point)
+        return output
 
-        if return_encoder:
-            return point
+class LiDARDiffusion(PointModule):
+    #code referenced from: PTv3 & https://github.com/luost26/diffusion-point-cloud
+    def __init__(self, 
+                      drop_path,
+                      n_stage,
+                      enc_block_depth,
+                      enc_channels,
+                      enc_n_heads,
+                      enc_patch_size, 
+                      qkv_bias, 
+                      qk_scale, 
+                      attn_drop , 
+                      proj_drop, 
+                      mlp_ratio, 
+                      stride,
+                      order,
+                      in_channels,
+                      condition_out_channel,
+                      condition_hidden_channel,
+                      dec_depths,
+                      dec_channels,
+                      dec_n_head,
+                      dec_patch_size,
+                      time_out_ch,
+                      time_embedding_in_ch,
+                      time_hidden_ch,
+                      out_channel,
+                      num_steps,
+                      beta_1,
+                      beta_T
+                      ):
+        super().__init__()
+        self.encoder = PointTransformerEncoder( 
+                                                drop_path, 
+                                                n_stage,
+                                                enc_block_depth, 
+                                                enc_channels, 
+                                                enc_n_heads,
+                                                enc_patch_size, 
+                                                qkv_bias, 
+                                                qk_scale, 
+                                                attn_drop , 
+                                                proj_drop, 
+                                                mlp_ratio, 
+                                                stride,
+                                                order,
+                                                in_channels,
+                                                condition_out_channel,
+                                                condition_hidden_channel
+                                                )
+        
+        self.decoder = PointTransformerDecoder( 
+                                                drop_path,
+                                                dec_depths,
+                                                enc_channels,
+                                                dec_channels,
+                                                n_stage,
+                                                dec_n_head,
+                                                dec_patch_size,
+                                                mlp_ratio,
+                                                qkv_bias,
+                                                qk_scale,
+                                                attn_drop,
+                                                proj_drop,
+                                                time_out_ch,
+                                                condition_out_channel
+        )
 
-        point = self.decoder(point)
-        point = self.fc(point)
+        self.time_fc = PointSequential(FC(
+            in_channels = time_embedding_in_ch,
+            hidden_channels= time_hidden_ch,
+            out_channels= time_out_ch,
+        ))
 
-        return point
+        self.final_fc = PointSequential(FC(
+            in_channels = dec_channels[0],
+            hidden_channels = dec_channels[0] * 2,
+            out_channels=out_channel
+        ))
+
+        self.var_sched = VarianceSchedule(num_steps=num_steps,   # max T
+                                          beta_1=beta_1,
+                                          beta_T=beta_T
+                                          )
+           
+    def get_loss(self, static_objects, lidar_16,  t=None):
+        r'''
+        args: 
+            static object: for train, GT 
+            time_embedding: sinusoidal positional embedded time_embedding
+            lidar_16: 16ch lidar raw 
+        '''
+        latent_z = self.encoder(lidar_16)
+
+        batch_size, _, point_dim = static_objects.size()
+        if t == None:
+            t = self.var_sched.uniform_sample_t(batch_size)
+        alpha_bar = self.var_sched.alpha_bars[t]
+
+        output = self.final_fc(output)
+
+        c0 = torch.sqrt(alpha_bar).view(-1, 1, 1)       # (B, 1, 1)
+        c1 = torch.sqrt(1 - alpha_bar).view(-1, 1, 1)   # (B, 1, 1)
+
+        e_rand = torch.randn_like(static_objects)  # (B, N, d)
+        e_theta = self.decoder(c0 * static_objects + c1 * e_rand, latent_z, t)
+
+        loss = F.mse_loss(e_theta.view(-1, point_dim), e_rand.view(-1, point_dim), reduction='mean')
+        return loss
+    
+    def sample(self, num_points, lidar_16, t=None, flexibility = 0.):
+        latent_z = self.encoder(lidar_16)
+        x_T = torch.randn([1, num_points, 3]).to(latent_z.device)
+        traj = {self.var_sched.num_steps: x_T}
+
+        for t in range(self.var_sched.num_steps, 0, -1):
+            z = torch.randn_like(x_T) if t > 1 else torch.zeros_like(x_T)
+            alpha = self.var_sched.alphas[t]
+            alpha_bar = self.var_sched.alpha_bars[t]
+            sigma = self.var_sched.get_sigmas(t, flexibility)
+
+            c0 = 1.0 / torch.sqrt(alpha)
+            c1 = (1 - alpha) / torch.sqrt(1 - alpha_bar)
+
+            x_t = traj[t]
+            e_theta = self.decoder(x_t, latent_z, t)
+            x_next = c0 * (x_t - c1 * e_theta) + sigma * z
+            traj[t-1] = x_next.detach()     # Stop gradient and save trajectory.
+            traj[t] = traj[t].cpu()         # Move previous output to CPU memory.
+        
+        return traj[0]
+
+        
+class VarianceSchedule(nn.Module):
+    #code from :https://github.com/luost26/diffusion-point-cloud/blob/main/models/diffusion.py
+    def __init__(self, num_steps, beta_1, beta_T, mode='linear'):
+        super().__init__()
+        assert mode in ('linear', )
+        self.num_steps = num_steps
+        self.beta_1 = beta_1
+        self.beta_T = beta_T
+        self.mode = mode
+
+        if mode == 'linear':
+            betas = torch.linspace(beta_1, beta_T, steps=num_steps)
+
+        betas = torch.cat([torch.zeros([1]), betas], dim=0)     # Padding
+
+        alphas = 1 - betas
+        log_alphas = torch.log(alphas)
+        for i in range(1, log_alphas.size(0)):  # 1 to T
+            log_alphas[i] += log_alphas[i - 1]
+        alpha_bars = log_alphas.exp()
+
+        sigmas_flex = torch.sqrt(betas)
+        sigmas_inflex = torch.zeros_like(sigmas_flex)
+        for i in range(1, sigmas_flex.size(0)):
+            sigmas_inflex[i] = ((1 - alpha_bars[i-1]) / (1 - alpha_bars[i])) * betas[i]
+        sigmas_inflex = torch.sqrt(sigmas_inflex)
+
+        self.register_buffer('betas', betas)
+        self.register_buffer('alphas', alphas)
+        self.register_buffer('alpha_bars', alpha_bars)
+        self.register_buffer('sigmas_flex', sigmas_flex)
+        self.register_buffer('sigmas_inflex', sigmas_inflex)
+
+    def uniform_sample_t(self, batch_size):
+        ts = np.random.choice(np.arange(1, self.num_steps+1), batch_size)
+        return ts.tolist()
+
+    def get_sigmas(self, t, flexibility):
+        assert 0 <= flexibility and flexibility <= 1
+        sigmas = self.sigmas_flex[t] * flexibility + self.sigmas_inflex[t] * (1 - flexibility)
+        return sigmas
