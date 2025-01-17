@@ -103,7 +103,7 @@ class Point(Dict):
 
         if depth is None:
             # Adaptive measure the depth of serialization cube (length = 2 ^ depth)
-            depth = int(self.grid_coord.max()).bit_length()
+            depth = min(int(self.grid_coord.max()).bit_length(), 16)
         self["serialized_depth"] = depth
         # Maximum bit length for serialization code is 63 (int64)
         assert depth * 3 + len(self.offset).bit_length() <= 63
@@ -285,6 +285,8 @@ class SerializedPooling(PointModule):
             self.act = PointSequential(act_layer())
 
     def forward(self, point: Point):
+        # print("pooling!")
+        # print(point.feat.shape)
         pooling_depth = (math.ceil(self.stride) - 1).bit_length()
         if pooling_depth > point.serialized_depth:
             pooling_depth = 0
@@ -368,7 +370,7 @@ class SerializedUnpooling(PointModule):
         out_channels,
         norm_layer=None,
         act_layer=None,
-        traceable=False,  # record parent and cluster
+        traceable=True,  # record parent and cluster
     ):
         super().__init__()
         self.proj = PointSequential(nn.Linear(in_channels, out_channels))
@@ -453,7 +455,6 @@ class Embedding(PointModule):
         self.in_channels = in_channels
         self.embed_channels = embed_channels
 
-        # TODO: check remove spconv
         self.stem = PointSequential(
             conv=spconv.SubMConv3d(
                 in_channels,
@@ -677,7 +678,7 @@ class Block(PointModule):
             spconv.SubMConv3d(
                 channels,
                 channels,
-                kernel_size=5,
+                kernel_size=3,
                 bias=True,
                 indice_key=cpe_indice_key,
             ),
@@ -727,48 +728,8 @@ class Block(PointModule):
         point.feat = shortcut + point.feat
 
         point.sparse_conv_feat = point.sparse_conv_feat.replace_feature(point.feat)
-        #print(f"block output feat shape: {point.feat.shape}")
         return point
 
-
-class FeatureExpending(PointModule):
-    r"""
-    Expand the featuremap to the upsample ratio with C2 channel and reshape
-    """
-    def __init__(self, in_feat_channels, c1 , c2, num_1x1s):
-        super().__init__()
-        self.num_1x1s = num_1x1s
-        
-        self.conv1x1sets = nn.ModuleList()
-        for i in range(num_1x1s):
-            conv_set = nn.Sequential(
-                nn.Conv1d(in_feat_channels, c1, kernel_size=1),
-                nn.BatchNorm1d(c1),
-                nn.GELU(),
-                nn.Conv1d(c1, c2, kernel_size=1),
-                nn.BatchNorm1d(c2),
-                nn.GELU()
-            )
-            self.conv1x1sets.append(conv_set)
-        
-    def forward(self, point):
-        #print(f"expending input feat shape: {point.feat.shape}")
-        # seperate the feature into different channels
-        feat = rearrange(point.feat, 'n c -> 1 c n')
-        
-        concated_feat = []
-        
-        for convset in self.conv1x1sets:
-            tmp_feat = convset(feat)
-            concated_feat.append(tmp_feat)
-        
-        concated_feat = torch.cat(concated_feat, dim=1)
-        
-        # print(f"expending output feat shape: {concated_feat.shape}")
-        point.feat = rearrange(concated_feat, '1 c n -> n c' , r = self.num_1x1s)    #rearrange the feature channel  [N , rC] -> [rN , C]
-        # print(f"expending output feat shape(rearranged): {point.feat.shape}")
-        return point
-    
 class FC(nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels = 3, dropout = 0.0):
         super().__init__()
@@ -811,6 +772,7 @@ class PointTransformerEncoder(PointModule):
         super().__init__()
 
         self.order = order
+        self.encoder = PointSequential()
 
         self.embedding = Embedding(
             in_channels=in_channels,
@@ -898,28 +860,179 @@ class PointTransformerEncoder(PointModule):
         
         point = self.embedding(point)
         condition = self.encoder(point)
-        return self.fc(condition)
+        return self.fc(condition).feat
 
-class PointTransformerDecoder(PointModule):
-    def __init__(self,
+class AutoEncoder(PointModule):
+    def __init__(self, 
+                 in_channels,
                  drop_path,
-                 dec_depths,
+                 block_depth,
                  enc_channels,
+                 enc_n_heads,
+                 enc_patch_size,
+                 qkv_bias, 
+                 qk_scale, 
+                 attn_drop, 
+                 proj_drop, 
+                 mlp_ratio, 
+                 stride,
+                 dec_depths,
+                 dec_n_head,
+                 dec_patch_size,
                  dec_channels,
-                 n_stage,
-                 dec_n_head:tuple,
-                 dec_patch_size:tuple,
-                 mlp_ratio,
-                 qkv_bias,
-                 qk_scale,
-                 attn_drop,
-                 proj_drop,
-                 time_out_ch,
-                 condition_out_channel
-                 ):
+                 order = ("z", "z-trans", "hilbert", "hilbert-trans"),
+                 out_channel=3,
+                 fc_hidden=64,
+                ):
+        
         super().__init__()
+        n_stage = len(block_depth)
+        self.order = order
+        self.encoder = PointSequential()
+        self.generate_encoder(drop_path, 
+                              n_stage,
+                              block_depth, 
+                              enc_channels, 
+                              enc_n_heads,
+                              enc_patch_size, 
+                              qkv_bias, 
+                              qk_scale, 
+                              attn_drop, 
+                              proj_drop, 
+                              mlp_ratio, 
+                              stride
+                              )
 
-        self.decoder = PointSequential()
+        assert len(enc_channels) == n_stage, "Encoder channels must match number of stages"
+        assert len(stride) == n_stage - 1, "Stride must match number of stages - 1"
+        assert all(ps > 0 for ps in enc_patch_size), "Patch sizes must be positive"
+        assert all(ps > 0 for ps in dec_patch_size), "Patch sizes must be positive"
+
+        self.decoder = self.generate_decoder(drop_path,
+                              dec_depths,
+                              enc_channels,
+                              dec_channels,
+                              n_stage,
+                              dec_n_head,
+                              dec_patch_size,
+                              mlp_ratio,
+                              qkv_bias,
+                              qk_scale,
+                              attn_drop,
+                              proj_drop,
+                              )
+
+        self.embedding = Embedding(
+            in_channels=in_channels,
+            embed_channels=enc_channels[0],
+            norm_layer=partial(nn.BatchNorm1d, eps=1e-3, momentum=0.01),
+            act_layer=nn.GELU,
+        )
+        
+        self.fc = PointSequential(
+            FC(
+                in_channels=dec_channels[0],
+                hidden_channels=fc_hidden,
+                out_channels=out_channel,
+                dropout=0.0
+            )
+        )
+        
+    def generate_encoder(self, 
+                         drop_path, 
+                         n_stage,
+                         block_depth, 
+                         enc_channels, 
+                         enc_n_heads:tuple,
+                         enc_patch_size, 
+                         qkv_bias, 
+                         qk_scale, 
+                         attn_drop , 
+                         proj_drop, 
+                         mlp_ratio, 
+                         stride:tuple ):
+        
+        enc_drop_path = [x.item() for x in torch.linspace(0, drop_path, sum(block_depth))]
+        for stage in range(n_stage):
+            _enc_drop_path = enc_drop_path[sum(block_depth[:stage]):sum(block_depth[:stage + 1])]
+            enc = PointSequential()
+
+            if stage == 0:
+                for i in range(block_depth[stage]):
+                    enc.add(
+                        Block(
+                            channels=enc_channels[stage],
+                            n_heads=enc_n_heads[stage],
+                            patch_size=enc_patch_size[stage],
+                            mlp_ratio=mlp_ratio,
+                            qkv_bias=qkv_bias,
+                            qk_scale=qk_scale,
+                            attn_drop=attn_drop,
+                            proj_drop=proj_drop,
+                            drop_path=_enc_drop_path[i],
+                            norm_layer=partial(
+                                            PDNorm,
+                                            norm_layer=partial(nn.LayerNorm, elementwise_affine=True),
+                                            conditions=("ScanNet", "S3DIS", "Structured3D"),
+                                            decouple=True,
+                                            adaptive=False,
+                                        ),
+                            order_index=i % len(self.order),
+                            cpe_indice_key=f"stage{stage}",
+                        ),
+                        name=f"block{i}",
+                    )
+         
+            if stage > 0:
+                enc.add(
+                    SerializedPooling(
+                        in_channels=enc_channels[stage - 1],
+                        out_channels=enc_channels[stage],
+                        stride=stride[stage - 1],
+                        norm_layer=partial(nn.BatchNorm1d, eps=1e-3, momentum=0.01),
+                        act_layer=nn.GELU,
+                    ),
+                    name="down",
+                )
+
+                for i in range(block_depth[stage]):
+                    enc.add(
+                        Block(
+                            channels=enc_channels[stage],
+                            n_heads=enc_n_heads[stage],
+                            patch_size=enc_patch_size[stage],
+                            mlp_ratio=mlp_ratio,
+                            qkv_bias=qkv_bias,
+                            qk_scale=qk_scale,
+                            attn_drop=attn_drop,
+                            proj_drop=proj_drop,
+                            drop_path=_enc_drop_path[i],
+                            norm_layer= nn.LayerNorm,
+                            order_index=i % len(self.order),
+                            cpe_indice_key=f"stage{stage}"
+                        ),
+                        name=f"block{i}",
+                    )
+
+                if len(enc) != 0:
+                    self.encoder.add(module=enc, name=f"enc{stage}")
+
+
+    def generate_decoder(self,
+                         drop_path,
+                         dec_depths,
+                         enc_channels,
+                         dec_channels,
+                         n_stage,
+                         dec_n_head:tuple,
+                         dec_patch_size:tuple,
+                         mlp_ratio,
+                         qkv_bias,
+                         qk_scale,
+                         attn_drop,
+                         proj_drop,
+                         ):
+        decoder = PointSequential()
         dec_drop_path = [ x.item() for x in torch.linspace(0, drop_path, sum(dec_depths)) ]
         dec_channels = list(dec_channels) + [enc_channels[-1]]
         for stage in reversed(range(0,n_stage - 1)):
@@ -927,10 +1040,9 @@ class PointTransformerDecoder(PointModule):
 
             _dec_drop_path.reverse()
             dec = PointSequential()
-            print(stage)
             dec.add(
                 SerializedUnpooling(
-                        in_channels=dec_channels[stage + 1] + time_out_ch + condition_out_channel,
+                        in_channels=dec_channels[stage + 1],
                         skip_channels=enc_channels[stage],
                         out_channels=dec_channels[stage],
                         norm_layer=partial(nn.BatchNorm1d, eps=1e-3, momentum=0.01),
@@ -956,151 +1068,236 @@ class PointTransformerDecoder(PointModule):
                         ),
                         name=f"block{i}",
                     )
-            self.decoder.add(module=dec, name=f"dec{stage}")
-    
-    def forward(self, points, latent_z, time_embedding):
-        latent_z = latent_z.unsqueeze(1).expand(-1, points.size(1), -1)
-        time_embedding = time_embedding.unsqueeze(1).expand(-1, points.size(1), -1)
-
-        x = torch.cat([points, latent_z, time_embedding], dim =-1)
-        print(f"[Decoder] x's shape: {x.shape}")
-        output = self.decoder(x)
+            decoder.add(module=dec, name=f"dec{stage}")
         
-        return output
+        return decoder
 
+    def forward(self, data_dict):
+        point = Point(data_dict)
+
+        point.serialization(self.order, shuffle_orders=True)
+        point.sparsify()
+        
+        point = self.embedding(point)
+        point = self.encoder(point)
+
+        point = self.decoder(point)
+        point = self.fc(point)
+
+        return point.feat
+    
 class LiDARDiffusion(PointModule):
     #code referenced from: PTv3 & https://github.com/luost26/diffusion-point-cloud
     def __init__(self, 
-                      drop_path,
-                      n_stage,
-                      enc_block_depth,
-                      enc_channels,
-                      enc_n_heads,
-                      enc_patch_size, 
-                      qkv_bias, 
-                      qk_scale, 
-                      attn_drop , 
-                      proj_drop, 
-                      mlp_ratio, 
-                      stride,
-                      order,
-                      in_channels,
-                      condition_out_channel,
-                      condition_hidden_channel,
-                      dec_depths,
-                      dec_channels,
-                      dec_n_head,
-                      dec_patch_size,
-                      time_out_ch,
-                      time_embedding_in_ch,
-                      time_hidden_ch,
-                      out_channel,
-                      num_steps,
-                      beta_1,
-                      beta_T
+                      condition_drop_path = 0.3, 
+                      condition_enc_block_depth = (2, 2, 2), 
+                      condition_enc_channels = (32, 64, 128), 
+                      condition_enc_n_heads = (2, 4, 8),
+                      condition_enc_patch_size = (512, 512, 512), 
+                      condition_qkv_bias = True, 
+                      condition_qk_scale = None, 
+                      condition_attn_drop  = 0.1, 
+                      condition_proj_drop = 0.1, 
+                      condition_mlp_ratio = 4, 
+                      condition_stride = (2, 2, 2), 
+                      condition_in_channels = 4,
+                      condition_out_channel = 128,
+                      condition_hidden_channel = 32,
+                      drop_path = 0.3,
+                      enc_block_depth = (2,2,2,4,2),
+                      enc_channels = (32, 64, 128, 256, 512),
+                      enc_n_heads = (2, 4, 8, 16, 32),
+                      enc_patch_size = (1024, 1024, 1024, 1024, 1024), 
+                      qkv_bias = True, 
+                      qk_scale = None, 
+                      attn_drop = 0.1, 
+                      proj_drop = 0.1, 
+                      mlp_ratio = 4, 
+                      stride = (2, 2, 2, 2),
+                      order=("z", "z-trans", "hilbert", "hilbert-trans"),
+                      dec_depths = (2, 2, 2, 2),
+                      dec_channels = (32, 64, 128, 256),
+                      dec_n_head = (2, 4, 8, 16),
+                      dec_patch_size = (1024, 1024, 1024, 1024),
+                      time_out_ch = 3,
+                      num_steps = 1000,
+                      beta_1 = 10e-5,
+                      beta_T = 10e-2,
+                      device = 'cuda'
                       ):
         super().__init__()
-        self.encoder = PointTransformerEncoder( 
-                                                drop_path, 
-                                                n_stage,
-                                                enc_block_depth, 
-                                                enc_channels, 
-                                                enc_n_heads,
-                                                enc_patch_size, 
-                                                qkv_bias, 
-                                                qk_scale, 
-                                                attn_drop , 
-                                                proj_drop, 
-                                                mlp_ratio, 
-                                                stride,
+        self.device = device
+        condition_n_stage = len(condition_enc_block_depth)
+        n_stage = len(enc_block_depth)
+
+        self.condition_encoder = PointTransformerEncoder( 
+                                                condition_drop_path, 
+                                                condition_n_stage,
+                                                condition_enc_block_depth, 
+                                                condition_enc_channels, 
+                                                condition_enc_n_heads,
+                                                condition_enc_patch_size, 
+                                                condition_qkv_bias, 
+                                                condition_qk_scale, 
+                                                condition_attn_drop , 
+                                                condition_proj_drop, 
+                                                condition_mlp_ratio, 
+                                                condition_stride,
                                                 order,
-                                                in_channels,
+                                                condition_in_channels,
                                                 condition_out_channel,
                                                 condition_hidden_channel
                                                 )
+
+        in_channels = 3 + condition_out_channel + 3
         
-        self.decoder = PointTransformerDecoder( 
-                                                drop_path,
-                                                dec_depths,
-                                                enc_channels,
-                                                dec_channels,
-                                                n_stage,
-                                                dec_n_head,
-                                                dec_patch_size,
-                                                mlp_ratio,
-                                                qkv_bias,
-                                                qk_scale,
-                                                attn_drop,
-                                                proj_drop,
-                                                time_out_ch,
-                                                condition_out_channel
-        )
-
-        self.time_fc = PointSequential(FC(
-            in_channels = time_embedding_in_ch,
-            hidden_channels= time_hidden_ch,
-            out_channels= time_out_ch,
-        ))
-
-        self.final_fc = PointSequential(FC(
-            in_channels = dec_channels[0],
-            hidden_channels = dec_channels[0] * 2,
-            out_channels=out_channel
-        ))
-
+        self.model = AutoEncoder(in_channels= in_channels,
+                                 drop_path=drop_path,
+                                 block_depth=enc_block_depth,
+                                 enc_channels=enc_channels,
+                                 enc_n_heads=enc_n_heads,
+                                 enc_patch_size=enc_patch_size,
+                                 qkv_bias=qkv_bias,
+                                 qk_scale=qk_scale,
+                                 attn_drop=attn_drop,
+                                 proj_drop=proj_drop,
+                                 mlp_ratio=mlp_ratio,
+                                 stride=stride,
+                                 dec_depths=dec_depths,
+                                 dec_n_head=dec_n_head,
+                                 dec_patch_size=dec_patch_size,
+                                 dec_channels=dec_channels,
+                                 order=order,
+                                 out_channel=3,
+                                 fc_hidden=64
+                                 )
+        self.time_emb_ch = time_out_ch
         self.var_sched = VarianceSchedule(num_steps=num_steps,   # max T
                                           beta_1=beta_1,
                                           beta_T=beta_T
                                           )
            
-    def get_loss(self, static_objects, lidar_16,  t=None):
+    def get_loss(self, static_objects, lidar_16, device, t=None):
         r'''
         args: 
             static object: for train, GT 
             time_embedding: sinusoidal positional embedded time_embedding
             lidar_16: 16ch lidar raw 
         '''
-        latent_z = self.encoder(lidar_16)
-
-        batch_size, _, point_dim = static_objects.size()
+        latent_z = self.condition_encoder(lidar_16)
+        L_dim , _ = latent_z.shape
+        N, point_dim = static_objects.size()
         if t == None:
-            t = self.var_sched.uniform_sample_t(batch_size)
+            t = self.var_sched.uniform_sample_t(1)
         alpha_bar = self.var_sched.alpha_bars[t]
-
-        output = self.final_fc(output)
+        beta = self.var_sched.betas[t]
 
         c0 = torch.sqrt(alpha_bar).view(-1, 1, 1)       # (B, 1, 1)
         c1 = torch.sqrt(1 - alpha_bar).view(-1, 1, 1)   # (B, 1, 1)
 
-        e_rand = torch.randn_like(static_objects)  # (B, N, d)
-        e_theta = self.decoder(c0 * static_objects + c1 * e_rand, latent_z, t)
+        e_rand = torch.randn_like(static_objects)  # (N, 3)
+        x = self.make_dictionary(c0 * static_objects + c1 * e_rand, latent_z, beta, device=device)    #forward process
+        e_theta = self.model(x)
+        
+        
+        if N < L_dim:
+            final_dim = max(point_dim,L_dim)
+            assert L_dim > point_dim, "What?!?!"
+            
+            e_rand_pad_rows = final_dim - e_rand.shape[0]
+            e_rand_zero_padding = torch.zeros((e_rand_pad_rows, 3), device=device, dtype=e_rand.dtype)
+            e_rand_padded = torch.cat([e_rand, e_rand_zero_padding], dim=0)
+        
+            loss = F.mse_loss(e_theta.view(-1, final_dim), e_rand_padded.view(-1, final_dim), reduction='mean')
+        
+        else:
+            loss = F.mse_loss(e_theta.view(-1, point_dim), e_rand.view(-1, point_dim), reduction='mean')
 
-        loss = F.mse_loss(e_theta.view(-1, point_dim), e_rand.view(-1, point_dim), reduction='mean')
         return loss
     
-    def sample(self, num_points, lidar_16, t=None, flexibility = 0.):
-        latent_z = self.encoder(lidar_16)
-        x_T = torch.randn([1, num_points, 3]).to(latent_z.device)
+    def sample(self, num_points, lidar_16, device, t=None, flexibility = 0.):
+        latent_z = self.condition_encoder(lidar_16)
+        x_T = torch.randn([1, num_points, 3]).to(device)
         traj = {self.var_sched.num_steps: x_T}
 
         for t in range(self.var_sched.num_steps, 0, -1):
+            condition = latent_z.clone().detach()
             z = torch.randn_like(x_T) if t > 1 else torch.zeros_like(x_T)
             alpha = self.var_sched.alphas[t]
             alpha_bar = self.var_sched.alpha_bars[t]
+            beta = self.var_sched.betas[t]
             sigma = self.var_sched.get_sigmas(t, flexibility)
 
             c0 = 1.0 / torch.sqrt(alpha)
             c1 = (1 - alpha) / torch.sqrt(1 - alpha_bar)
 
             x_t = traj[t]
-            e_theta = self.decoder(x_t, latent_z, t)
+
+            x = self.make_dictionary(x_t, condition, beta, device=device)
+
+            e_theta = self.model(x)
+            # print(e_theta)
             x_next = c0 * (x_t - c1 * e_theta) + sigma * z
             traj[t-1] = x_next.detach()     # Stop gradient and save trajectory.
             traj[t] = traj[t].cpu()         # Move previous output to CPU memory.
         
         return traj[0]
+    
+    def make_dictionary(self, noised_input, latent_z, beta, device, grid_size=0.05, segments=1):
+        """
+        Create a dictionary containing coordinates, features, batch indices, and grid size.
 
+        Args:
+            noised_input (Tensor): Input tensor with shape (B, N, C), where B is the batch size, N is the number of points, and C is the feature dimension.
+            latent_z (Tensor): Latent tensor with 'feat' attribute containing additional features.
+            t (Tensor): Timesteps tensor used for sinusoidal embeddings.
+            grid_size (float): Grid size for point cloud processing.
+            segments (int): Number of segments for batch creation.
+
+        Returns:
+            dict: A dictionary with 'coord', 'feat', 'batch', and 'grid_size'.
+        """
+        # Extract latent features and generate sinusoidal time embeddings
+        B, N, C = noised_input.shape
+        beta = beta.view(1, 1).to(device)
+        # Compute shapes
         
+        t_emb = torch.cat([beta, torch.sin(beta), torch.cos(beta)], dim=1)  # (B, 1, 3)
+        D, L = latent_z.shape  # latent: (B, D)
+
+        # Determine max padding size across tensors
+        max_dim = max(N, D)
+
+        # Pad latent features
+        latent_pad_rows = max_dim - latent_z.shape[0]
+        latent_zero_padding = torch.zeros((latent_pad_rows, L), device=device, dtype=latent_z.dtype)
+        latent_padded = torch.cat([latent_z, latent_zero_padding], dim=0)  # (B*max_dim, D)
+
+        # Rearrange coordinates
+        coord = rearrange(noised_input, "b n c -> (b n) c")  # e.g. (B*N, 3)
+        coord_pad_rows = max_dim - coord.shape[0]
+        coord_zero_padding = torch.zeros((coord_pad_rows, 3), device=device, dtype=noised_input.dtype)
+        coord_padded = torch.cat([coord, coord_zero_padding], dim=0)  # (B*max_dim, C)
+
+        # Pad time embeddings
+        t_emb_pad_rows = max_dim - t_emb.shape[0]
+        t_emb_zero_padding = torch.zeros((t_emb_pad_rows, 3), device=device, dtype=t_emb.dtype)
+        t_emb_padded = torch.cat([t_emb, t_emb_zero_padding], dim=0)  # (B*max_dim, T)
+
+        # Concatenate features for diffusion
+        feat = torch.cat([coord_padded, latent_padded, t_emb_padded], dim=1)
+
+        # Create batch tensor
+        batch_tensor = torch.full((max_dim,), 0, dtype=torch.int64).to(device)
+
+        # Create and return the dictionary
+        return {
+            "coord": coord_padded,
+            "feat": feat,
+            "batch": batch_tensor,
+            "grid_size": torch.tensor(grid_size, device=noised_input.device)
+        }
+
 class VarianceSchedule(nn.Module):
     #code from :https://github.com/luost26/diffusion-point-cloud/blob/main/models/diffusion.py
     def __init__(self, num_steps, beta_1, beta_T, mode='linear'):
