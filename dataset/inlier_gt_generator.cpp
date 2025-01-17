@@ -263,7 +263,7 @@ int main(int argc, char** argv)
     // The transform from "map" -> "lidar" is T_{lm} = T_cl * T_{mc} 
     // but T_{mc} = inverseSE3( T_{cm} ) => so T_{lm} = T_cl * T_{mc} 
     // Then c_lidar = T_{lm} * c_map
-    double threshold = 70.0; // 100m
+    double threshold = 25.0; // 100m
 
     // create output dir
     {

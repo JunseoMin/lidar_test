@@ -126,7 +126,7 @@ def evaluate_model(model, gt_dir, input_dir, output_dir, device="cuda"):
             print(gt_points)
 
             start_time = time.time()
-            output = model(point_dict)
+            output = model(point_dict, True)
             pred_points = output.feat.cpu().numpy()[:, :3]
             end_time = time.time()
             
