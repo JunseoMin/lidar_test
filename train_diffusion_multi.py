@@ -10,17 +10,13 @@ import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
 
-# ---------------
-# Import your model definitions
-# (LiDARDiffusion, etc.)
-# from model import LiDARDiffusion
-# from util import PointCloudDataset, PointCloudGTDataset
-# ---------------
+import wandb  # 1) Import wandb
 
 from model import *
 from util import *
 
 from geomloss import SamplesLoss
+
 
 def train_diffusion_ddp(
     local_rank,
@@ -51,10 +47,10 @@ def train_diffusion_ddp(
 
     model = LiDARDiffusion(
         condition_drop_path = 0.3, 
-        condition_enc_block_depth = (1, 1, 1), 
-        condition_enc_channels = (8, 8, 8), 
-        condition_enc_n_heads = (2, 4, 8),
-        condition_enc_patch_size = (64, 64, 64), 
+        condition_enc_block_depth = (1, 1, 2), 
+        condition_enc_channels = (8, 16, 32), 
+        condition_enc_n_heads = (2, 2, 2),
+        condition_enc_patch_size = (512, 512, 512), 
         condition_qkv_bias = True, 
         condition_qk_scale = None, 
         condition_attn_drop  = 0.1, 
@@ -63,12 +59,12 @@ def train_diffusion_ddp(
         condition_stride = (2, 2, 2), 
         condition_in_channels = 4,
         condition_out_channel = 3,
-        condition_hidden_channel = 32,
+        condition_hidden_channel = 8,
         drop_path = 0.3,
         enc_block_depth = (2, 2, 2, 2, 2),
-        enc_channels = (8, 8, 8, 8, 8),
-        enc_n_heads = (2, 4, 8, 8, 8),
-        enc_patch_size = (128, 128, 128, 128, 128), 
+        enc_channels = (16, 32, 64, 128, 256),
+        enc_n_heads = (2, 2, 4, 4, 8),
+        enc_patch_size = (1024, 1024, 1024, 1024, 1024), 
         qkv_bias = True, 
         qk_scale = None, 
         attn_drop = 0.1, 
@@ -77,9 +73,9 @@ def train_diffusion_ddp(
         stride = (2, 2, 2, 2),
         order=("z", "z-trans", "hilbert", "hilbert-trans"),
         dec_depths = (2, 2, 2, 2),
-        dec_channels = (8, 8, 8, 8),
-        dec_n_head = (2, 4, 8, 8),
-        dec_patch_size = (128, 128, 128, 128),
+        dec_channels = (16, 32, 64, 128),
+        dec_n_head = (2, 2, 4, 8),
+        dec_patch_size = (1024, 1024, 1024, 1024),
         time_out_ch = 3,
         num_steps = 500,
         beta_1 = 1e-4,
@@ -99,12 +95,9 @@ def train_diffusion_ddp(
     ############################################
     # 4) Slice data for each rank (quick method)
     ############################################
-    # In production, use DistributedSampler and DataLoader. For demonstration, we do simple slicing.
-    # Ensure each rank sees a unique chunk of data.
     train_files_per_rank = train_files[local_rank::world_size]
     gt_files_per_rank    = gt_files[local_rank::world_size]
 
-    # Similarly for validation
     val_files_per_rank = val_files[local_rank::world_size]
     val_gt_files_per_rank = val_gt_files[local_rank::world_size]
 
@@ -131,12 +124,28 @@ def train_diffusion_ddp(
             print(f"[Rank 0] Resumed from epoch {start_epoch} with min loss {min_loss:.4f}")
 
     ################################
+    # 5.1) Initialize wandb on rank=0
+    ################################
+    if local_rank == 0:
+        wandb.init(
+            project="lidar-diffusion",  # Your W&B project name
+            name="LiDAR-Diffusion",            # A name for this run
+            config={
+                "learning_rate": 2e-4,
+                "weight_decay": 1e-3,
+                "epochs": 120,
+                "batch_split": f"{len(train_files)} total / {world_size} ranks",
+            }
+        )
+        # If you want gradient logging, you can optionally do:
+        wandb.watch(ddp_model, log="all")
+
+    ################################
     # 6) Start training
     ################################
     num_epochs = 120
     for epoch in range(start_epoch, num_epochs + 1):
         # 6.1) Train
-        # [Important for DistributedSampler: sampler.set_epoch(epoch). We skip that since we do slicing]
         ddp_model.train()
         total_loss = 0.0
         start_time = time.time()
@@ -144,9 +153,6 @@ def train_diffusion_ddp(
         if local_rank == 0:
             print(f"----- Epoch {epoch} start (rank=0)-----")
 
-        # We just zip across sliced dataset
-        # Each rank sees ~1/world_size portion
-        # If one rank has fewer data points than another, it will finish earlier in the loop
         data_loader = zip(train_dataset, gt_dataset)
         skipped = 0
         num_samples_this_rank = 0
@@ -163,61 +169,80 @@ def train_diffusion_ddp(
 
             total_loss += loss.item()
             num_samples_this_rank += 1
+            if local_rank == 0:
+                for name, param in ddp_model.module.named_parameters():
+                    if param.requires_grad:
+                        wandb.log({f"weights/{name}": wandb.Histogram(param.detach().cpu().numpy())}, step=epoch)
+                        if param.grad is not None:
+                            wandb.log({f"gradients/{name}": wandb.Histogram(param.grad.cpu().numpy())}, step=epoch)
 
-        # We need to gather total_loss from all ranks, so we can compute an overall average.
-        # For simplicity, you can reduce from all ranks to rank 0, and then compute average.
+
+        # Gather total_loss from all ranks for global average
         total_loss_tensor = torch.tensor([total_loss, num_samples_this_rank], dtype=torch.float32, device=device)
         dist.all_reduce(total_loss_tensor, op=dist.ReduceOp.SUM)  # sum across ranks
         total_loss_all = total_loss_tensor[0].item()
         total_count_all = total_loss_tensor[1].item()
         avg_loss = total_loss_all / max(1e-8, total_count_all)
 
-        # Print logs only on rank 0
+        scheduler.step()
+        epoch_time = time.time() - start_time
+
+        # Print/log only on rank 0
         if local_rank == 0:
             print(f"[Rank 0] Epoch {epoch}/{num_epochs}, Loss: {avg_loss:.4f}, Skipped: {skipped}, LR: {scheduler.get_last_lr()[0]:.6f}")
-            print(f"Epoch time: {time.time() - start_time:.2f} seconds")
+            print(f"Epoch time: {epoch_time:.2f} seconds")
 
-        scheduler.step()
+            # Log to wandb
+            wandb.log({
+                "epoch": epoch,
+                "train_loss": avg_loss,
+                "skipped_batches": skipped,
+                "learning_rate": scheduler.get_last_lr()[0],
+                "epoch_time_sec": epoch_time,
+            }, step=epoch)
 
-        # 6.2) Validation (optionally only do on rank 0 to reduce overhead)
-        # If you want to average validation loss across all ranks, adapt similarly to training step above.
-        # For demonstration, let's just do rank 0 validation:
+        # 6.2) Validation
+        # For demonstration, let's only do validation on rank 0
+        # and then optionally all_reduce the result if each rank also did eval
         if local_rank == 0:
-            if epoch:
-                ddp_model.eval()
-                val_total_loss = 0.0
-                val_samples_count = 0
-                val_criterion = SamplesLoss(loss='sinkhorn', p=2, blur=.001, reach=.2)
+            ddp_model.eval()
+            val_total_loss = 0.0
+            val_samples_count = 0
+            val_criterion = SamplesLoss(loss='sinkhorn', p=2, blur=.001, reach=.2)
 
-                with torch.no_grad():
-                    for val_16, gt_val in zip(val_dataset, val_gt_dataset):
-                        if gt_val is None or gt_val.size(0) == 0:
-                            continue
-                        
-                        reconst = ddp_model.module.sample(50000, val_16, device)
-                        reconst = rearrange(reconst, "b n d -> (b n) d")
-                        val_loss = val_criterion(reconst, gt_val)
-                        val_total_loss += val_loss.item()
-                        val_samples_count += 1
+            with torch.no_grad():
+                for val_16, gt_val in zip(val_dataset, val_gt_dataset):
+                    if gt_val is None or gt_val.size(0) == 0:
+                        continue
+                    
+                    reconst = ddp_model.module.sample(50000, val_16, device)
+                    reconst = rearrange(reconst, "b n d -> (b n) d")
+                    val_loss = val_criterion(reconst, gt_val)
+                    val_total_loss += val_loss.item()
+                    val_samples_count += 1
 
-                # 모든 rank의 validation loss 합산
-                val_loss_tensor = torch.tensor([val_total_loss, val_samples_count], dtype=torch.float32, device=device)
-                dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.SUM)  # 모든 rank의 결과 합산
-                total_val_loss = val_loss_tensor[0].item()
-                total_val_count = val_loss_tensor[1].item()
-                avg_val_loss = total_val_loss / max(1, total_val_count)
+            # This code only runs in rank=0, so if you want truly distributed
+            # evaluation, you would replicate the pattern used for training loss.
+            if val_samples_count > 0:
+                avg_val_loss = val_total_loss / val_samples_count
+            else:
+                avg_val_loss = 0.0
 
-                if local_rank == 0:
-                    print(f"[Rank 0] Validation done. Avg validation loss: {avg_val_loss:.6f}")
+            print(f"[Rank 0] Validation done. Avg validation loss: {avg_val_loss:.6f}")
+
+            # Log validation metrics
+            wandb.log({
+                "epoch": epoch,
+                "val_loss": avg_val_loss,
+            }, step=epoch)
 
             # 6.3) Save checkpoint only on rank 0
-            # Decide if it's best so far
             if avg_loss < min_loss:
                 if avg_loss < 0:
                     print("[Rank 0] ERROR: Negative loss, skip saving.")
                 else:
                     min_loss = avg_loss
-                    save_path = f"/home/server01/js_ws/lidar_test/ckpt/best_model_reconst.pth"
+                    save_path = f"/home/server01/js_ws/lidar_test/ckpt/best_model_diffusion.pth"
                     torch.save({
                         'epoch': epoch,
                         'model_state_dict': ddp_model.module.state_dict(),
@@ -228,7 +253,7 @@ def train_diffusion_ddp(
                     print(f"[Rank 0] Best model saved at {save_path} with loss: {min_loss:.4f}")
 
             # Save "latest" checkpoint
-            save_path = f"/home/server01/js_ws/lidar_test/ckpt/latest_reconst.pth"
+            save_path = f"/home/server01/js_ws/lidar_test/ckpt/latest_diffusion.pth"
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': ddp_model.module.state_dict(),
@@ -242,6 +267,7 @@ def train_diffusion_ddp(
     dist.destroy_process_group()
     if local_rank == 0:
         print("[Rank 0] Training complete.")
+        wandb.finish()  # End the wandb run
 
 
 def main():
@@ -273,9 +299,9 @@ def main():
     val_files = glob.glob(validation_file_paths)[:10]
     val_gt_files = glob.glob(validation_gt_file_paths)[:10]
 
-    # For a quick test, let's slice them even smaller
-    train_files = train_files  # e.g. 20 samples
-    gt_files = gt_files
+    # For a quick test, you can slice them smaller or keep entire set
+    # e.g., train_files = train_files[:20]
+    #       gt_files = gt_files[:20]
 
     # Now, if using torchrun or `torch.distributed.launch`, each rank calls main() with a different local_rank
     train_diffusion_ddp(

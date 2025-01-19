@@ -22,6 +22,8 @@ import copy
 
 import numpy as np
 
+import flash_attn
+
 # Awsome PTv3 codes (not modified) ---------------------------------
 # Thanks to authors of PTv3!
 """
@@ -498,56 +500,69 @@ class MLP(nn.Module):
         x = self.dropout(x)
         return x
 
-
-
-class CloseSerializedAttn(PointModule):
-    def __init__(self,
-                 channels,
-                 patch_size,
-                 n_heads,
-                 qk_scale = None,
-                 atten_bias = True,
-                 atten_dropout = 0.,
-                 proj_dropout = 0.,
-                 order_idx = 0,
-                 ):
+class SerializedAttention(PointModule):
+    def __init__(
+        self,
+        channels,
+        n_heads,
+        patch_size,
+        attn_bias=True,
+        qk_scale=None,
+        attn_drop=0.0,
+        proj_drop=0.0,
+        order_index=0,
+        enable_rpe=False,
+        enable_flash=True,
+        upcast_attention=False,
+        upcast_softmax=False,
+    ):
         super().__init__()
-
+        assert channels % n_heads == 0
         self.channels = channels
         self.n_heads = n_heads
+        self.scale = qk_scale or (channels // n_heads) ** -0.5
+        self.order_index = order_index
+        self.upcast_attention = upcast_attention
+        self.upcast_softmax = upcast_softmax
+        self.enable_rpe = enable_rpe
+        self.enable_flash = enable_flash
+        if enable_flash:
+            assert (
+                enable_rpe is False
+            ), "Set enable_rpe to False when enable Flash Attention"
+            assert (
+                upcast_attention is False
+            ), "Set upcast_attention to False when enable Flash Attention"
+            assert (
+                upcast_softmax is False
+            ), "Set upcast_softmax to False when enable Flash Attention"
+            assert flash_attn is not None, "Make sure flash_attn is installed."
+            self.patch_size = patch_size
+            self.attn_drop = attn_drop
+        else:
+            # when disable flash attention, we still don't want to use mask
+            # consequently, patch size will auto set to the
+            # min number of patch_size_max and number of points
+            self.patch_size_max = patch_size
+            self.patch_size = 0
+            self.attn_drop = torch.nn.Dropout(attn_drop)
 
-        assert channels % n_heads == 0, "channel should be devided by the number of heads"
-
-        self.order_idx = order_idx
-        self.scale = qk_scale or channels//n_heads ** -0.5
-
-        self.patch_size_max = patch_size
-        self.patch_size = 0
-        self.attn_drop = torch.nn.Dropout(atten_dropout)
-
-        self.qkv = nn.Linear(channels, channels * 3, bias=atten_bias)
-        
-        self.projection = nn.Linear(channels,channels)  
-        self.proj_dropout = nn.Dropout(proj_dropout)
-        self.softmax = nn.Softmax(dim = -1)
-
+        self.qkv = torch.nn.Linear(channels, channels * 3, bias=attn_bias)
+        self.proj = torch.nn.Linear(channels, channels)
+        self.proj_drop = torch.nn.Dropout(proj_drop)
+        self.softmax = torch.nn.Softmax(dim=-1)
+        self.rpe = RPE(patch_size, n_heads) if self.enable_rpe else None
 
     @torch.no_grad()
     def get_rel_pos(self, point, order):
         K = self.patch_size
-        rel_pos_key = f"rel_pos_{self.order_idx}"
+        rel_pos_key = f"rel_pos_{self.order_index}"
         if rel_pos_key not in point.keys():
             grid_coord = point.grid_coord[order]
             grid_coord = grid_coord.reshape(-1, K, 3)
-            relative_positions = grid_coord.unsqueeze(2) - grid_coord.unsqueeze(1)
-            point[rel_pos_key] = relative_positions
+            point[rel_pos_key] = grid_coord.unsqueeze(2) - grid_coord.unsqueeze(1)
         return point[rel_pos_key]
 
-    # @torch.no_grad()
-    # def calculate_distance_weights(self, relative_positions):
-    #     distances_squared = torch.sum(relative_positions**2, dim=-1)
-    #     return torch.exp(-distances_squared / (2 * self.sigma**2))
-    
     @torch.no_grad()
     def get_padding_and_inverse(self, point):
         pad_key = "pad"
@@ -590,8 +605,6 @@ class CloseSerializedAttn(PointModule):
                         - self.patch_size
                     ]
                 pad[_offset_pad[i] : _offset_pad[i + 1]] -= _offset_pad[i] - _offset[i]
-                #print("!!!!")
-                #print(self.patch_size)
                 cu_seqlens.append(
                     torch.arange(
                         _offset_pad[i],
@@ -609,52 +622,36 @@ class CloseSerializedAttn(PointModule):
         return point[pad_key], point[unpad_key], point[cu_seqlens_key]
 
     def forward(self, point):
-        """
-        @torch.inference_mode()
-        def offset2bincount(offset):
-            return torch.diff(
-                offset, prepend=torch.tensor([0], device=offset.device, dtype=torch.long)
-            )
-        """
-        self.patch_size = min(
-                offset2bincount(point.offset).min().tolist(), self.patch_size_max
-            )
         
         H = self.n_heads
         K = self.patch_size
         C = self.channels
 
         pad, unpad, cu_seqlens = self.get_padding_and_inverse(point)
-        order = point.serialized_order[self.order_idx][pad]
-        #print("attndebug ===========")
-        #print(point.serialized_order[self.order_idx])
-        #print(order)
-        #print("attndebug ===========")
-        inverse = unpad[point.serialized_inverse[self.order_idx]]
 
+        order = point.serialized_order[self.order_index][pad]
+        inverse = unpad[point.serialized_inverse[self.order_index]]
+
+        # padding and reshape feat and batch for serialized point patch
         qkv = self.qkv(point.feat)[order]
-        # #print(qkv)
 
-        q, k, v = (
-                qkv.reshape(-1, K, 3, H, C // H).permute(2, 0, 3, 1, 4).unbind(dim=0)
-            )
-        attn = (q * self.scale) @ k.transpose(-2, -1)  # (N', H, K, K)
-        # relative_positions = self.get_rel_pos(point, order)
-        # distance_weights = self.calculate_distance_weights(relative_positions)
-        # distance_weights = torch.log(distance_weights)
-        # attn = attn + distance_weights
-
-        attn = self.softmax(attn)
-        attn = self.attn_drop(attn).to(qkv.dtype)
-        feat = (attn @ v).transpose(1, 2).reshape(-1, C)
-
+        
+        feat = flash_attn.flash_attn_varlen_qkvpacked_func(
+            qkv.half().reshape(-1, 3, H, C // H),
+            cu_seqlens,
+            max_seqlen=self.patch_size,
+            dropout_p=self.attn_drop if self.training else 0,
+            softmax_scale=self.scale,
+        ).reshape(-1, C)
+        feat = feat.to(qkv.dtype)
         feat = feat[inverse]
-        feat = self.projection(feat)
-        feat = self.proj_dropout(feat)        
 
+        # ffn
+        feat = self.proj(feat)
+        feat = self.proj_drop(feat)
         point.feat = feat
         return point
-        
+
 
 class Block(PointModule):
     def __init__(self,
@@ -687,15 +684,15 @@ class Block(PointModule):
         )
 
         self.norm1 = PointSequential(norm_layer(channels))
-        self.attn = CloseSerializedAttn(
+        self.attn = SerializedAttention(
             channels=channels,
             patch_size=patch_size,
             n_heads=n_heads,
-            atten_bias=qkv_bias,
+            attn_bias=qkv_bias,
             qk_scale=qk_scale,
-            atten_dropout=attn_drop,
-            proj_dropout=proj_drop,
-            order_idx=order_index
+            attn_drop=attn_drop,
+            proj_drop=proj_drop,
+            order_index=order_index
         )
         
         self.norm2 = PointSequential(norm_layer(channels))
@@ -882,7 +879,7 @@ class AutoEncoder(PointModule):
                  dec_channels,
                  order = ("z", "z-trans", "hilbert", "hilbert-trans"),
                  out_channel=3,
-                 fc_hidden=64,
+                 fc_hidden=32,
                 ):
         
         super().__init__()
