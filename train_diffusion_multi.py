@@ -49,8 +49,8 @@ def train_diffusion_ddp(
         condition_drop_path = 0.3, 
         condition_enc_block_depth = (1, 1, 2), 
         condition_enc_channels = (8, 16, 32), 
-        condition_enc_n_heads = (2, 2, 2),
-        condition_enc_patch_size = (512, 512, 512), 
+        condition_enc_n_heads = (2, 4, 4),
+        condition_enc_patch_size = (1024, 1024, 1024), 
         condition_qkv_bias = True, 
         condition_qk_scale = None, 
         condition_attn_drop  = 0.1, 
@@ -61,9 +61,9 @@ def train_diffusion_ddp(
         condition_out_channel = 3,
         condition_hidden_channel = 8,
         drop_path = 0.3,
-        enc_block_depth = (2, 2, 2, 2, 2),
-        enc_channels = (16, 32, 64, 128, 256),
-        enc_n_heads = (2, 2, 4, 4, 8),
+        enc_block_depth = (2, 2, 2, 4, 2),
+        enc_channels = (16, 16, 32, 64, 128),
+        enc_n_heads = (2, 2, 4, 4, 16),
         enc_patch_size = (1024, 1024, 1024, 1024, 1024), 
         qkv_bias = True, 
         qk_scale = None, 
@@ -74,7 +74,7 @@ def train_diffusion_ddp(
         order=("z", "z-trans", "hilbert", "hilbert-trans"),
         dec_depths = (2, 2, 2, 2),
         dec_channels = (16, 32, 64, 128),
-        dec_n_head = (2, 2, 4, 8),
+        dec_n_head = (2, 4, 8, 8),
         dec_patch_size = (1024, 1024, 1024, 1024),
         time_out_ch = 3,
         num_steps = 500,
@@ -138,7 +138,7 @@ def train_diffusion_ddp(
             }
         )
         # If you want gradient logging, you can optionally do:
-        wandb.watch(ddp_model, log="all")
+        wandb.watch(ddp_model, log="gradients", log_freq=100)
 
     ################################
     # 6) Start training
@@ -169,13 +169,6 @@ def train_diffusion_ddp(
 
             total_loss += loss.item()
             num_samples_this_rank += 1
-            if local_rank == 0:
-                for name, param in ddp_model.module.named_parameters():
-                    if param.requires_grad:
-                        wandb.log({f"weights/{name}": wandb.Histogram(param.detach().cpu().numpy())}, step=epoch)
-                        if param.grad is not None:
-                            wandb.log({f"gradients/{name}": wandb.Histogram(param.grad.cpu().numpy())}, step=epoch)
-
 
         # Gather total_loss from all ranks for global average
         total_loss_tensor = torch.tensor([total_loss, num_samples_this_rank], dtype=torch.float32, device=device)
@@ -284,10 +277,10 @@ def main():
     # ---------------
     # Prepare your file lists
     # ---------------
-    train_file_paths = "/home/server01/js_ws/dataset/reconstruction_input/train/velodyne/"
-    gt_file_paths = "/home/server01/js_ws/dataset/odometry_dataset/reconstruction_gt/"
-    validation_file_paths = "/home/server01/js_ws/dataset/reconstruction_input/validation/velodyne/00/*.bin"
-    validation_gt_file_paths = "/home/server01/js_ws/dataset/odometry_dataset/reconstruction_gt/00/*.bin"
+    train_file_paths = "/home/server01/js_ws/dataset/reconstruction_dataset/reconstruction_input/train/velodyne/"
+    gt_file_paths = "/home/server01/js_ws/dataset/reconstruction_dataset/reconst_gt/train/"
+    validation_file_paths = "/home/server01/js_ws/dataset/reconstruction_dataset/reconstruction_input/validation/velodyne/00/*.bin"
+    validation_gt_file_paths = "/home/server01/js_ws/dataset/reconstruction_dataset/reconst_gt/validation/00/*.bin"
 
     train_files = []
     gt_files    = []

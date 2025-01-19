@@ -47,42 +47,43 @@ def train_diffusion(model, train_dataset, gt_dataset, device_train,
             static_objects = static_objects
             lidar_16 = lidar_16
 
-            loss = model.get_loss(static_objects, lidar_16)
+            loss = model.get_loss(static_objects, lidar_16, device_train)
             loss.backward()
             optimizer.step()
 
             total_loss += loss.item()
-
-        # if epoch % 10 == 0:
-        #     print(f"validation")
-        #     with torch.no_grad():
-        #     x_0_est = model.sample(num_points=16384, lidar_16=lidar_16)
 
         avg_loss = total_loss / len(train_dataset)
 
         print(f"Epoch {epoch}/{num_epochs}, Loss: {avg_loss:.4f}")
         print(f"Min Loss: {min_loss:.4f}, LR: {scheduler.get_last_lr()[0]:.6f}")
         print(f"Epoch {epoch} time: {time.time() - start_time:.2f} seconds")
-
-        if epoch:
-            print("*******Validation start *********")
-            val_data_loader = tqdm(zip(validation_dataset, validation_dataset_gt),
-                           total=len(validation_dataset),
-                           desc=f"Epoch {epoch}/{num_epochs}")
+        
+        if not epoch % 10:
+            print(f"----- validation start -----")
+            val_total_loss = 0.0
+            val_samples_count = 0
+            model.eval()
             val_criterion = SamplesLoss(loss='sinkhorn', p=2, blur=.001, reach=.2)
-            total_len = len(validation_dataset)
-            avg_val = 0.
+
             with torch.no_grad():
-                for val_16, gt_val in val_data_loader:
-                    reconst = model.sample(50000, val_16)
+               for val_16, gt_val in zip(validation_dataset, validation_dataset_gt):
+                    if gt_val is None or gt_val.size(0) == 0:
+                        continue
+                    
+                    reconst = model.sample(50000, val_16, device_train)
                     reconst = rearrange(reconst, "b n d -> (b n) d")
                     val_loss = val_criterion(reconst, gt_val)
-                    avg_val += val_loss.item()
+                    val_total_loss += val_loss.item()
+                    val_samples_count += 1
             
-            avg_val /= total_len
+            if val_samples_count > 0:
+                avg_val_loss = val_total_loss / val_samples_count
+            else:
+                avg_val_loss = 0.0
 
-            print(f"Validation successed! avg validation loss: {avg_val}")
-
+            print(f"[INFO] Validation done. Avg validation loss: {avg_val_loss:.6f}")
+            model.train()
 
         if avg_loss < min_loss:
             if avg_loss < 0:
@@ -120,12 +121,11 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    
     # Define paths
-    train_file_paths = f"/home/server01/js_ws/dataset/reconstruction_input/train/velodyne/"
-    gt_file_paths = f"/home/server01/js_ws/dataset/odometry_dataset/reconstruction_gt/"
-    validation_file_paths = f"/home/server01/js_ws/dataset/reconstruction_input/validation/velodyne/00/*.bin"
-    validation_gt_file_paths = f"/home/server01/js_ws/dataset/odometry_dataset/reconstruction_gt/00/*.bin"
+    train_file_paths = "/home/server01/js_ws/dataset/reconstruction_dataset/reconstruction_input/train/velodyne/"
+    gt_file_paths = "/home/server01/js_ws/dataset/reconstruction_dataset/reconst_gt/train/"
+    validation_file_paths = "/home/server01/js_ws/dataset/reconstruction_dataset/reconstruction_input/validation/velodyne/00/*.bin"
+    validation_gt_file_paths = "/home/server01/js_ws/dataset/reconstruction_dataset/reconst_gt/validation/00/*.bin"
 
     train_dict = {}
     gt_dict = {}
@@ -136,41 +136,43 @@ if __name__ == '__main__':
     print("train device: ", device_train)
     print("loss device: ", device_validation)
 
-    model = LiDARDiffusion( condition_drop_path = 0.3, 
-                            condition_enc_block_depth = (1, 1, 1), 
-                            condition_enc_channels = (16, 16, 16), 
-                            condition_enc_n_heads = (2, 4, 8),
-                            condition_enc_patch_size = (64, 64, 64), 
-                            condition_qkv_bias = True, 
-                            condition_qk_scale = None, 
-                            condition_attn_drop  = 0.1, 
-                            condition_proj_drop = 0.1, 
-                            condition_mlp_ratio = 4, 
-                            condition_stride = (2, 2, 2), 
-                            condition_in_channels = 4,
-                            condition_out_channel = 3,
-                            condition_hidden_channel = 32,
-                            drop_path = 0.3,
-                            enc_block_depth = (2, 2, 2, 2, 2),
-                            enc_channels = (16, 16, 16, 16, 16),
-                            enc_n_heads = (2, 4, 8, 16, 16),
-                            enc_patch_size = (128, 128, 128, 128, 128), 
-                            qkv_bias = True, 
-                            qk_scale = None, 
-                            attn_drop = 0.1, 
-                            proj_drop = 0.1, 
-                            mlp_ratio = 4, 
-                            stride = (2, 2, 2, 2),
-                            order=("z", "z-trans", "hilbert", "hilbert-trans"),
-                            dec_depths = (2, 2, 2, 2),
-                            dec_channels = (16, 16, 16, 16),
-                            dec_n_head = (2, 4, 8, 16),
-                            dec_patch_size = (128, 128, 128, 128),
-                            time_out_ch = 3,
-                            num_steps = 500,
-                            beta_1 = 10e-5,
-                            beta_T = 10e-2,
-                            device=device_train)
+    model = LiDARDiffusion(
+        condition_drop_path = 0.3, 
+        condition_enc_block_depth = (1, 1, 2), 
+        condition_enc_channels = (8, 16, 32), 
+        condition_enc_n_heads = (2, 4, 4),
+        condition_enc_patch_size = (1024, 1024, 1024), 
+        condition_qkv_bias = True, 
+        condition_qk_scale = None, 
+        condition_attn_drop  = 0.1, 
+        condition_proj_drop = 0.1, 
+        condition_mlp_ratio = 4, 
+        condition_stride = (2, 2, 2), 
+        condition_in_channels = 4,
+        condition_out_channel = 3,
+        condition_hidden_channel = 8,
+        drop_path = 0.3,
+        enc_block_depth = (2, 2, 2, 4, 2),
+        enc_channels = (16, 16, 32, 64, 128),
+        enc_n_heads = (2, 2, 4, 4, 16),
+        enc_patch_size = (1024, 1024, 1024, 1024, 1024), 
+        qkv_bias = True, 
+        qk_scale = None, 
+        attn_drop = 0.1, 
+        proj_drop = 0.1, 
+        mlp_ratio = 4, 
+        stride = (2, 2, 2, 2),
+        order=("z", "z-trans", "hilbert", "hilbert-trans"),
+        dec_depths = (2, 2, 2, 2),
+        dec_channels = (16, 32, 64, 128),
+        dec_n_head = (2, 4, 8, 8),
+        dec_patch_size = (1024, 1024, 1024, 1024),
+        time_out_ch = 3,
+        num_steps = 500,
+        beta_1 = 1e-4,
+        beta_T = 1e-2,
+        device=device_train
+    )
 
     train = []; gt = []; validation = []; validation_gt =[]
 
@@ -184,8 +186,8 @@ if __name__ == '__main__':
     validation = validation[:10]
     validation_gt = validation_gt[:10]
 
-    train_dict['train'] = train[:10]
-    gt_dict['gt'] = gt[:10]
+    train_dict['train'] = train
+    gt_dict['gt'] = gt
 
     print(train[10], train[20])
 
