@@ -37,6 +37,15 @@ def kitti_to_dict(file_path, device, grid_size=0.05, segments=1):
 def kitti_to_tensor(ndarray,device):
     return torch.tensor(ndarray).to(device)
 
+def point_to_bin(output, output_path):
+    # Convert to numpy and ensure it's on CPU
+    a = output
+    output = output.cpu().numpy()
+    # Reshape to (N, 3) format for [x,y,z]
+    points = output.reshape(-1, 3)
+    # Save to binary file
+    points.astype(np.float32).tofile(output_path)
+
 class PointCloudDataset(Dataset):
     def __init__(self, file_paths, device, grid_size=0.05):
         self.file_paths = file_paths
