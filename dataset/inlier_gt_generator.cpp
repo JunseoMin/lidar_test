@@ -209,21 +209,21 @@ int main(int argc, char** argv)
     if(!loadCentroidsBin(centroids_file, centroids)) {
         return 1;
     }
-    std::vector<ClusterInfo> clusterInfos;
-    if(!loadCovTxt(cov_file, clusterInfos)){
-        return 1;
-    }
-    if(clusterInfos.size() != centroids.size()){
-        std::cerr << "[Warning] clusterInfos.size(" << clusterInfos.size()
-                  << ") != centroids.size(" << centroids.size() << ")\n";
-    }
+    // std::vector<ClusterInfo> clusterInfos;
+    // if(!loadCovTxt(cov_file, clusterInfos)){
+    //     return 1;
+    // }
+    // if(clusterInfos.size() != centroids.size()){
+    //     std::cerr << "[Warning] clusterInfos.size(" << clusterInfos.size()
+    //               << ") != centroids.size(" << centroids.size() << ")\n";
+    // }
 
     // 3) load global map => [N,4] float => (x,y,z,label)
-    std::vector<GlobalPoint> globalPoints;
-    if(!loadGlobalMap(global_map_bin, globalPoints)){
-        return 1;
-    }
-    std::cout << "[Info] global map points: " << globalPoints.size() << std::endl;
+    // std::vector<GlobalPoint> globalPoints;
+    // if(!loadGlobalMap(global_map_bin, globalPoints)){
+    //     return 1;
+    // }
+    // std::cout << "[Info] global map points: " << globalPoints.size() << std::endl;
 
     // 4) load calibration => T_{lc} (LiDAR->camera)
     //    => T_{cl} = inverseSE3(T_{lc})
@@ -263,7 +263,7 @@ int main(int argc, char** argv)
     // The transform from "map" -> "lidar" is T_{lm} = T_cl * T_{mc} 
     // but T_{mc} = inverseSE3( T_{cm} ) => so T_{lm} = T_cl * T_{mc} 
     // Then c_lidar = T_{lm} * c_map
-    double threshold = 25.0; // 100m
+    double threshold = 60.0; // 100m
 
     // create output dir
     {
@@ -277,9 +277,10 @@ int main(int argc, char** argv)
         const Eigen::Matrix4d &T_mc = poses[f]; // camera->map
         Eigen::Matrix4d T_cm = inverseSE3(T_mc); // map->camera
         Eigen::Matrix4d T_lm = T_lc * T_cm;       // map->lidar
+        std::vector<float> outPoints;
 
-        std::vector<size_t> selected_clusters;
-        selected_clusters.reserve(centroids.size());
+        // std::vector<size_t> selected_clusters;
+        // selected_clusters.reserve(centroids.size());
 
         // 1) centroid->lidar => distance check
         for(size_t cidx=0; cidx<centroids.size(); cidx++){
@@ -295,33 +296,35 @@ int main(int argc, char** argv)
                                         + c_lidar(1)*c_lidar(1)
                                         + c_lidar(2)*c_lidar(2));
             if(dist_lidar <= threshold){
-                selected_clusters.push_back(cidx);
+                // selected_clusters.push_back(cidx);
+                outPoints.push_back((float)c_lidar(0));
+                outPoints.push_back((float)c_lidar(1));
+                outPoints.push_back((float)c_lidar(2));
             }
         }
 
         // 2) gather points => transform "map->lidar" => store as [x,y,z,label]
-        std::vector<float> outPoints;
-        for(size_t idx : selected_clusters){
-            if(idx >= clusterInfos.size()) continue;
-            const auto &cinfo = clusterInfos[idx];
-            // original_indices
-            for(auto origIdx : cinfo.original_indices){
-                if(origIdx < globalPoints.size()){
-                    float mx = globalPoints[origIdx].x;
-                    float my = globalPoints[origIdx].y;
-                    float mz = globalPoints[origIdx].z;
-                    float label = globalPoints[origIdx].label;
+        // for(size_t idx : selected_clusters){
+        //     if(idx >= clusterInfos.size()) continue;
+        //     const auto &cinfo = clusterInfos[idx];
+        //     // original_indices
+        //     for(auto origIdx : cinfo.original_indices){
+        //         if(origIdx < globalPoints.size()){
+        //             float mx = globalPoints[origIdx].x;
+        //             float my = globalPoints[origIdx].y;
+        //             float mz = globalPoints[origIdx].z;
+        //             float label = globalPoints[origIdx].label;
 
-                    Eigen::Vector4d p_map(mx, my, mz, 1.0);
-                    Eigen::Vector4d p_lidar = T_lm * p_map;
+        //             Eigen::Vector4d p_map(mx, my, mz, 1.0);
+        //             Eigen::Vector4d p_lidar = T_lm * p_map;
 
-                    outPoints.push_back((float)p_lidar(0));
-                    outPoints.push_back((float)p_lidar(1));
-                    outPoints.push_back((float)p_lidar(2));
-                    // outPoints.push_back(label);
-                }
-            }
-        }
+        //             outPoints.push_back((float)p_lidar(0));
+        //             outPoints.push_back((float)p_lidar(1));
+        //             outPoints.push_back((float)p_lidar(2));
+        //             // outPoints.push_back(label);
+        //         }
+        //     }
+        // }
 
         // 3) save => 000000.bin ...
         std::ostringstream oss;
@@ -340,8 +343,7 @@ int main(int argc, char** argv)
         ofs.close();
 
         if (outPoints.size()/4 == 0){
-            std::cout << "[Frame " << f << "] clusters: " << selected_clusters.size()
-                      << ", total points: " << (outPoints.size()/4)
+            std::cout << "[Frame " << f << "] total points: " << (outPoints.size()/4)
                       << " => " << out_file << std::endl;
         }
     }

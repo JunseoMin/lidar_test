@@ -62,31 +62,31 @@ def train_diffusion(model, train_dataset, gt_dataset, device_train,
 
         wandb.log({"train_loss": avg_loss, "epoch": epoch, "learning_rate": scheduler.get_last_lr()[0]})
 
-        if not epoch % 10:
-            print(f"----- validation start -----")
-            val_total_loss = 0.0
-            val_samples_count = 0
-            model.eval()
-            val_criterion = SamplesLoss(loss='sinkhorn', p=2, blur=.001, reach=.2)
+        # if not epoch % 10:
+        #     print(f"----- validation start -----")
+        #     val_total_loss = 0.0
+        #     val_samples_count = 0
+        #     model.eval()
+        #     val_criterion = SamplesLoss(loss='sinkhorn', p=2, blur=.001, reach=.2)
 
-            with torch.no_grad():
-               for val_16, gt_val in zip(validation_dataset, validation_dataset_gt):
-                    if gt_val is None or gt_val.size(0) == 0:
-                        continue
+        #     with torch.no_grad():
+        #        for val_16, gt_val in zip(validation_dataset, validation_dataset_gt):
+        #             if gt_val is None or gt_val.size(0) == 0:
+        #                 continue
                     
-                    reconst = model.sample(val_16["feat"].shape[0], val_16, device_train)
-                    reconst = rearrange(reconst, "b n d -> (b n) d")
-                    val_loss = val_criterion(reconst, gt_val)
-                    val_total_loss += val_loss.item()
-                    val_samples_count += 1
+        #             reconst = model.sample(val_16["feat"].shape[0], val_16, device_train)
+        #             reconst = rearrange(reconst, "b n d -> (b n) d")
+        #             val_loss = val_criterion(reconst, gt_val)
+        #             val_total_loss += val_loss.item()
+        #             val_samples_count += 1
             
-            if val_samples_count > 0:
-                avg_val_loss = val_total_loss / val_samples_count
-            else:
-                avg_val_loss = 0.0
+        #     if val_samples_count > 0:
+        #         avg_val_loss = val_total_loss / val_samples_count
+        #     else:
+        #         avg_val_loss = 0.0
 
-            print(f"[INFO] Validation done. Avg validation loss: {avg_val_loss:.6f}")
-            model.train()
+        #     print(f"[INFO] Validation done. Avg validation loss: {avg_val_loss:.6f}")
+        #     model.train()
 
         if avg_loss < min_loss:
             if avg_loss < 0:
@@ -152,7 +152,7 @@ if __name__ == '__main__':
         condition_attn_drop  = 0.1, 
         condition_proj_drop = 0.1, 
         condition_mlp_ratio = 4, 
-        condition_stride = (2, 2, 2), 
+        condition_stride = (2, 2), 
         condition_in_channels = 4,
         condition_out_channel = 3,
         condition_hidden_channel = 8,
@@ -188,8 +188,8 @@ if __name__ == '__main__':
     validation = glob.glob(validation_file_paths)
     validation_gt = glob.glob(validation_gt_file_paths)
     
-    validation = validation[:10]
-    validation_gt = validation_gt[:10]
+    validation = validation[2:3]
+    validation_gt = validation_gt[2:3]
 
     train_dict['train'] = train
     gt_dict['gt'] = gt
