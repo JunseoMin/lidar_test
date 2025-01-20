@@ -47,7 +47,7 @@ model = LiDARDiffusion(
     device = device_eval
 )
 
-ckpt_dir = "/home/server01/js_ws/lidar_test/ckpt/best_model_reconst.pth"
+ckpt_dir = "/home/server01/js_ws/lidar_test/ckpt/latest_reconst.pth"
 checkpoint = torch.load(ckpt_dir, map_location="cuda", weights_only=True)
 
 model.load_state_dict(checkpoint['model_state_dict'])

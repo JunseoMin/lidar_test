@@ -1117,6 +1117,7 @@ class LiDARDiffusion(PointModule):
                       dec_n_head = (2, 4, 8, 16),
                       dec_patch_size = (1024, 1024, 1024, 1024),
                       time_out_ch = 3,
+                      gt_channels = 3,
                       num_steps = 1000,
                       beta_1 = 10e-5,
                       beta_T = 10e-2,
@@ -1146,7 +1147,7 @@ class LiDARDiffusion(PointModule):
                                                 condition_hidden_channel
                                                 )
 
-        in_channels = 3 + condition_out_channel + 3
+        in_channels = gt_channels + condition_out_channel + time_out_ch
         
         self.model = AutoEncoder(in_channels= in_channels,
                                  drop_path=drop_path,
@@ -1206,7 +1207,6 @@ class LiDARDiffusion(PointModule):
             e_rand_padded = torch.cat([e_rand, e_rand_zero_padding], dim=0)
         
             loss = F.mse_loss(e_theta.view(-1, final_dim), e_rand_padded.view(-1, final_dim), reduction='mean')
-        
         else:
             loss = F.mse_loss(e_theta.view(-1, point_dim), e_rand.view(-1, point_dim), reduction='mean')
 
