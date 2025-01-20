@@ -15,6 +15,7 @@ from tqdm import tqdm
 from einops import rearrange
 
 import time
+import wandb
 
 def train_diffusion(model, train_dataset, gt_dataset, device_train,
                     scheduler, optimizer, device_validation, validation_dataset,
@@ -58,7 +59,9 @@ def train_diffusion(model, train_dataset, gt_dataset, device_train,
         print(f"Epoch {epoch}/{num_epochs}, Loss: {avg_loss:.4f}")
         print(f"Min Loss: {min_loss:.4f}, LR: {scheduler.get_last_lr()[0]:.6f}")
         print(f"Epoch {epoch} time: {time.time() - start_time:.2f} seconds")
-        
+
+        wandb.log({"train_loss": avg_loss, "epoch": epoch, "learning_rate": scheduler.get_last_lr()[0]})
+
         if not epoch % 10:
             print(f"----- validation start -----")
             val_total_loss = 0.0
@@ -71,7 +74,7 @@ def train_diffusion(model, train_dataset, gt_dataset, device_train,
                     if gt_val is None or gt_val.size(0) == 0:
                         continue
                     
-                    reconst = model.sample(50000, val_16, device_train)
+                    reconst = model.sample(val_16["feat"].shape[0], val_16, device_train)
                     reconst = rearrange(reconst, "b n d -> (b n) d")
                     val_loss = val_criterion(reconst, gt_val)
                     val_total_loss += val_loss.item()
@@ -119,6 +122,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--resume-from')
 
+    wandb.init(project="lidar_diffusion_training", name="LiDARDiffusion")
+
     args = parser.parse_args()
 
     # Define paths
@@ -152,8 +157,8 @@ if __name__ == '__main__':
         condition_out_channel = 3,
         condition_hidden_channel = 8,
         drop_path = 0.3,
-        enc_block_depth = (2, 2, 2, 4, 2),
-        enc_channels = (16, 16, 32, 64, 128),
+        enc_block_depth = (2, 2, 2, 3, 2),
+        enc_channels = (16, 32, 64, 128, 256),
         enc_n_heads = (2, 2, 4, 4, 16),
         enc_patch_size = (1024, 1024, 1024, 1024, 1024), 
         qkv_bias = True, 
@@ -168,8 +173,8 @@ if __name__ == '__main__':
         dec_n_head = (2, 4, 8, 8),
         dec_patch_size = (1024, 1024, 1024, 1024),
         time_out_ch = 3,
-        num_steps = 500,
-        beta_1 = 1e-4,
+        num_steps = 5000,
+        beta_1 = 1e-6,
         beta_T = 1e-2,
         device=device_train
     )
@@ -190,8 +195,7 @@ if __name__ == '__main__':
     gt_dict['gt'] = gt
 
     print(train[10], train[20])
-
-    ascii_art = pyfiglet.figlet_format("Hello World!")
+    ascii_art = pyfiglet.figlet_format("LIDAR DIFFUSION")
     print(ascii_art)
 
     # Initialize dataset and dataloaders for each sequence
@@ -201,8 +205,8 @@ if __name__ == '__main__':
     validation_dataset = PointCloudDataset(validation, device_train)
     validation_gt_dataset = PointCloudGTDataset(validation_gt, device_train)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-3)
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100], gamma=0.1)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=4e-4, weight_decay=1e-3)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100], gamma=0.5)
 
     if args.resume_from:
         ckptr = torch.load(args.resume_from, map_location=device_train)
