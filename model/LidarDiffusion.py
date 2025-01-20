@@ -1212,7 +1212,7 @@ class LiDARDiffusion(PointModule):
 
         return loss
     
-    def sample(self, num_points, lidar_16, device, t=None, flexibility = 0.):
+    def sample(self, num_points, lidar_16, device, t=None, flexibility = 0., is_validation = True):
         latent_z = self.condition_encoder(lidar_16)
         x_T = torch.randn([1, num_points, 3]).to(device)
         traj = {self.var_sched.num_steps: x_T}
@@ -1238,7 +1238,8 @@ class LiDARDiffusion(PointModule):
             traj[t-1] = x_next.detach()     # Stop gradient and save trajectory.
             traj[t] = traj[t].cpu()         # Move previous output to CPU memory.
         
-        return traj[0]
+
+        return traj[0] if is_validation else traj
     
     def make_dictionary(self, noised_input, latent_z, beta, device, grid_size=0.05, segments=1):
         """
