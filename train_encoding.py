@@ -9,6 +9,8 @@ from geomloss import SamplesLoss
 # import os
 import pyfiglet
 import wandb
+import argparse
+
 
 # os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 # os.environ["CUDA_VISIBLE_DEVICES"] = "1"
@@ -83,6 +85,10 @@ def train_encoding(model, train_dataset, gt_dataset, device_train,
         print(f"================================")
     print("========== train complete ==========")
 
+parser = argparse.ArgumentParser()
+parser.add_argument('--resume-from')
+args = parser.parse_args()
+
 device_train = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 print("training device: ", device_train)
@@ -122,7 +128,25 @@ gt_dataset = PointCloudGTDataset(gt, device_train)
 optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-3)
 scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100], gamma=0.5)
 
-criterion = SamplesLoss('sinkhorn', p=2, blur=0.001, reach=.2)
+criterion = SamplesLoss('sinkhorn', p=2, blur=0.001, scaling = 0.99, debias=True, reach=.2)
+
+if args.resume_from:
+    ckptr = torch.load(args.resume_from, map_location=device_train)
+        
+    model.load_state_dict(ckptr['model_state_dict'])
+    model.to(device_train)
+    optimizer.load_state_dict(ckptr['optimizer_state_dict'])
+    start_epoch = ckptr['epoch'] + 1
+    scheduler.load_state_dict(ckptr['scheduler_state_dict'])
+    min_loss = ckptr['min_loss']
+    
+    print(f"Checkpoint loaded. Resuming from epoch {start_epoch} with min loss {min_loss:.4f}")
+else:
+    start_epoch = 1
+    min_loss = float('inf')
+    print(f"Starting training for sequence {seq} from scratch.")
+
+
 
 train_encoding(model = model, train_dataset = train_dataset, gt_dataset = gt_dataset, device_train = device_train, scheduler = scheduler, 
-               optimizer = optimizer, criterion = criterion)
+               optimizer = optimizer, criterion = criterion, start_epoch=start_epoch, min_loss=min_loss)

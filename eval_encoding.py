@@ -18,7 +18,7 @@ model = PTEncoder(
                  mlp_ratio = 4, 
                  stride = (2, 2, 2, 2, 2, 2, 2, 2),
                  order=("z", "z-trans", "hilbert", "hilbert-trans")
-)
+).to(device)
 
 model_path = "/home/server01/js_ws/lidar_test/ckpt/best_model_encoding.pth"
 test_path = "/home/server01/js_ws/dataset/reconstruction_dataset/reconstruction_input/validation/velodyne/00/000000.bin"
@@ -27,6 +27,7 @@ input = kitti_to_dict(test_path, device=device)
 
 checkpoint = torch.load(model_path, map_location="cuda", weights_only=True)
 model.load_state_dict(checkpoint["model_state_dict"])
+model.to(device=device)
 model.eval()
 
 with torch.no_grad():
