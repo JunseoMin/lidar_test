@@ -1,6 +1,8 @@
 from model.LidarEncoder import PTEncoder
 from util import *
 
+from torch.optim.lr_scheduler import ChainedScheduler
+
 import glob
 import time
 from tqdm import tqdm
@@ -11,15 +13,11 @@ import pyfiglet
 import wandb
 import argparse
 
-
-# os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-# os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-# os.environ["TORCH_USE_CUDA_DSA"] = '1'
-
+from .loss.CombinedLossAE import *
 
 def train_encoding(model, train_dataset, gt_dataset, device_train,
                     scheduler, optimizer, criterion, min_loss = float('inf'), 
-                    start_epoch = 0, num_epochs=120):
+                    start_epoch = 0, num_epochs=150, train_decoder = True):
     model.to(device_train)
     model.train()
 
@@ -27,6 +25,14 @@ def train_encoding(model, train_dataset, gt_dataset, device_train,
         total_loss = 0.
         skipped = 0
 
+        train_decoder = False
+
+        if epoch < 20:
+            for param in model.decoder.parameters():
+                param.requires_grad = False
+            
+            train_decoder = True
+            
 
         start_time = time.time()
         print(f"----- Epoch {epoch} start -----")
@@ -37,18 +43,15 @@ def train_encoding(model, train_dataset, gt_dataset, device_train,
             if gt_data is None or gt_data.size(0) == 0:
                 skipped += 1
                 continue
-            
-            # print(train_data["feat"].shape)
-            # print(gt_data.shape)
-            
+                        
             optimizer.zero_grad()
-            pred = model(train_data)  # Forward pass
-            loss = criterion(pred, gt_data)  # Compute loss
+            pred_feat,pred_decoder = model(train_data, train_decoder)  # Forward pass
+            loss = criterion(pred_feat = pred_feat, pred_decoder= pred_decoder,input_data = train_data["feat"], gt_data = gt_data)  # Compute loss
+            # gt_data: Contains 100m centroids map
             loss.backward()  # Backpropagation
             optimizer.step()  # Update parameters
 
             total_loss += loss.item()    
-    
         avg_loss = total_loss / len(train_dataset)
         
         print(f"Epoch {epoch}/{num_epochs}, Loss: {avg_loss:.4f}")
@@ -100,35 +103,44 @@ wandb.init(project="lidar_encoding_training", name="LiDARENCODING")
 model = PTEncoder(
                  in_channels = 4,
                  drop_path = 0.3,
-                 enc_depths = (2, 2, 4, 4, 4, 4, 4, 2, 2),
-                 enc_channels = (32, 64, 128, 256, 512, 256, 128, 64, 32),
-                 enc_num_head = (2, 4, 8, 16, 32, 16, 8, 4, 2),
-                 enc_patch_size = (1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024), 
+                 enc_depths = (2, 2, 2, 4, 2, 2, 2),
+                 enc_channels = (32, 64, 128, 256, 512, 256, 128),
+                 enc_num_head = (2, 4, 8, 16, 32, 16, 8),
+                 enc_patch_size = (1024, 1024, 1024, 1024, 1024, 1024, 1024), 
                  qkv_bias = True, 
                  qk_scale = None, 
                  attn_drop = 0.1, 
                  proj_drop = 0.1, 
                  mlp_ratio = 4, 
-                 stride = (2, 2, 2, 2, 2, 2, 2, 2),
-                 order=("z", "z-trans", "hilbert", "hilbert-trans")
+                 stride = (2, 2, 2, 2, 2, 2),
+                 order=("z", "z-trans", "hilbert", "hilbert-trans"),
+                 out_channels=6,
+                 dec_depths=(1, 1, 2, 2, 1, 1),
+                 dec_channels=(4, 8, 16, 32, 64, 64),
+                 dec_num_head=(2, 2, 4, 8, 8, 8),
+                 dec_patch_size=(1024, 1024, 1024, 1024, 1024, 1024),
 )
 
 train = []; gt = []
 
 train_file_paths = "/home/server01/js_ws/dataset/reconstruction_dataset/reconstruction_input/train/velodyne/"
-gt_file_paths = "/home/server01/js_ws/dataset/odometry_dataset/encoding_gt/"
+gt_file_paths = "/home/server01/js_ws/dataset/encoder_dataset/encoder_xyzn"
 
 for seq in range(2,11): # train for seq 02 to seq 11
     train += glob.glob(train_file_paths + f"{seq:02d}/*.bin")
     gt += glob.glob(gt_file_paths + f"{seq:02d}/*.bin")
 
-train_dataset = PointCloudDataset(train, device_train, grid_size=0.01)
+train_dataset = PointCloudDataset(train, device_train, grid_size=0.01)  # 16channel lidar
 gt_dataset = PointCloudGTDataset(gt, device_train)
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-3)
-scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100], gamma=0.5)
+optimizer = torch.optim.AdamW(model.parameters(), lr=2e-8, weight_decay=1e-5)
 
-criterion = SamplesLoss('sinkhorn', p=2, blur=0.001, scaling = 0.99, debias=True, reach=.2)
+scheduler1 = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[5,10,15,20], gamma=10)
+scheduler2 = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[90,120], gamma=0.5)
+
+scheduler = ChainedScheduler([scheduler1,scheduler2], optimizer)
+
+criterion = CombinedCriterionAE()
 
 if args.resume_from:
     ckptr = torch.load(args.resume_from, map_location=device_train)
@@ -145,8 +157,6 @@ else:
     start_epoch = 1
     min_loss = float('inf')
     print(f"Starting training for sequence {seq} from scratch.")
-
-
 
 train_encoding(model = model, train_dataset = train_dataset, gt_dataset = gt_dataset, device_train = device_train, scheduler = scheduler, 
                optimizer = optimizer, criterion = criterion, start_epoch=start_epoch, min_loss=min_loss)

@@ -831,6 +831,13 @@ class PTEncoder(PointModule):
         pdnorm_adaptive=False,
         pdnorm_affine=True,
         pdnorm_conditions=("ScanNet", "S3DIS", "Structured3D"),
+        out_channels = 6,
+        #optional - decoder
+        dec_depths=(2, 2, 2, 2),
+        dec_channels=(64, 64, 128, 256),
+        dec_num_head=(4, 4, 8, 16),
+        dec_patch_size=(1024, 1024, 1024, 1024),
+
     ):
         super().__init__()
         self.num_stages = len(enc_depths)
@@ -925,15 +932,66 @@ class PTEncoder(PointModule):
             if len(enc) != 0:
                 self.enc.add(module=enc, name=f"enc{s}")
 
+        dec_drop_path = [
+            x.item() for x in torch.linspace(0, drop_path, sum(dec_depths))
+        ]
+        self.dec = PointSequential()
+        dec_channels = list(dec_channels) + [enc_channels[-1]]
+        for s in reversed(range(self.num_stages - 1)):
+            dec_drop_path_ = dec_drop_path[
+                sum(dec_depths[:s]) : sum(dec_depths[: s + 1])
+            ]
+            dec_drop_path_.reverse()
+            dec = PointSequential()
+            dec.add(
+                SerializedUnpooling(
+                    in_channels=dec_channels[s + 1],
+                    skip_channels=enc_channels[s],
+                    out_channels=dec_channels[s],
+                    norm_layer=bn_layer,
+                    act_layer=act_layer,
+                ),
+                name="up",
+            )
+            for i in range(dec_depths[s]):
+                dec.add(
+                    Block(
+                        channels=dec_channels[s],
+                        num_heads=dec_num_head[s],
+                        patch_size=dec_patch_size[s],
+                        mlp_ratio=mlp_ratio,
+                        qkv_bias=qkv_bias,
+                        qk_scale=qk_scale,
+                        attn_drop=attn_drop,
+                        proj_drop=proj_drop,
+                        drop_path=dec_drop_path_[i],
+                        norm_layer=ln_layer,
+                        act_layer=act_layer,
+                        pre_norm=pre_norm,
+                        order_index=i % len(self.order),
+                        cpe_indice_key=f"stage{s}",
+                        enable_rpe=enable_rpe,
+                        enable_flash=enable_flash,
+                        upcast_attention=upcast_attention,
+                        upcast_softmax=upcast_softmax,
+                    ),
+                    name=f"block{i}",
+                )
+            self.dec.add(module=dec, name=f"dec{s}")
+
         self.fc = PointSequential(FC(
             in_channels = enc_channels[-1],
             hidden_channels = enc_channels[-1]//2,
-            out_channels = 3
+            out_channels = 6
+        ))
+        self.decfc = PointSequential(FC(
+            in_channels = dec_channels[-1],
+            hidden_channels = dec_channels[-1]*2,
+            out_channels = 4
         ))
 
 
-
-    def forward(self, data_dict):
+    def forward(self, data_dict, train_decoder = True):
         """
         A data_dict is a dictionary containing properties of a batched point cloud.
         It should contain the following properties for PTv3:
@@ -947,5 +1005,14 @@ class PTEncoder(PointModule):
 
         point = self.embedding(point)
         point = self.enc(point)
+
+        if train_decoder:
+            features = self.fc(point)
+            
+            point = self.dec(point)
+            point = self.decfc(point)
+
+            return features.feat, point.feat
+
         point = self.fc(point)
         return point.feat

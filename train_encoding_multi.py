@@ -41,7 +41,6 @@ def train_loop_ddp(
         rank=local_rank, 
         world_size=world_size,
         timeout=timedelta(seconds=3600)
-
     )
     torch.cuda.set_device(local_rank)
     device = torch.device(f"cuda:{local_rank}")

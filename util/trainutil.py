@@ -10,6 +10,10 @@ def load_kitti_bin_gt(file_path):
     # print(file_path)
     return np.fromfile(file_path, dtype=np.float32).reshape(-1, 3)
 
+def load_kitti_bin_gt_7ch(file_path):
+    # print(file_path)
+    return np.fromfile(file_path, dtype=np.float32).reshape(-1, 7)
+
 def kitti_to_dict(file_path, device, grid_size=0.05, segments=1):
     raw_data = load_kitti_bin(file_path)
     coords = raw_data[:, :3]  # x, y, z
@@ -72,6 +76,8 @@ class PointCloudGTDataset(Dataset):
     def __getitem__(self, idx):
         file_path = self.file_paths[idx]
         # print(file_path)
-        gt = load_kitti_bin_gt(file_path)
+        gt = load_kitti_bin_gt_7ch(file_path)
+        gt = np.delete(gt, 3, axis=1)
+
         gt = kitti_to_tensor(gt, self.device)
         return gt

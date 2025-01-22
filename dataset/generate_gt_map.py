@@ -71,7 +71,7 @@ def arg_parse():
     parser = argparse.ArgumentParser(description="Generate voxelized semantic maps from KITTI dataset in chunks.")
     parser.add_argument('--dataset_path', type=str, default="/home/server01/js_ws/dataset/odometry_dataset/dataset/sequences",
                         help="Path to KITTI dataset sequences folder")
-    parser.add_argument('--output_path', type=str, default="/home/server01/js_ws/dataset/odometry_dataset/semantic_map",
+    parser.add_argument('--output_path', type=str, default="/home/server01/js_ws/dataset/encoder_dataset/semantic_map",
                         help="Output path for semantic maps.")
     parser.add_argument('--voxel_size', type=float, default=0.1,
                         help="Voxel size for down-sampling.")
@@ -115,7 +115,8 @@ def process_sequence(sequence_id, args):
     chunk_points = []
     chunk_labels = []
 
-    target_labels = {44, 50, 60, 80, 81, 71, 72 ,51}    #building, lane-marking, pole, traffic sign, trunk, fence, parking
+    # target_labels = {44, 50, 60, 80, 81, 71, 72 ,51}    #building, lane-marking, pole, traffic sign, trunk, fence, parking
+    target_labels = {0,1}    #building, lane-marking, pole, traffic sign, trunk, fence, parking
 
     datas = tqdm(enumerate(scan_files), total=len(scan_files), desc=f"Sequence {sequence_id:02d}")
     for i, scan_file in datas:
@@ -129,7 +130,7 @@ def process_sequence(sequence_id, args):
         points = load_lidar_scan(scan_path)
         semantic_label = load_label(label_path)
 
-        mask = np.isin(semantic_label, list(target_labels))
+        mask = ~np.isin(semantic_label, list(target_labels))
         points = points[mask]
         semantic_label = semantic_label[mask]
 
