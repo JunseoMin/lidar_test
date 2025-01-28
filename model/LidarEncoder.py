@@ -984,9 +984,10 @@ class PTEncoder(PointModule):
             hidden_channels = enc_channels[-1]//2,
             out_channels = 6
         ))
+        
         self.decfc = PointSequential(FC(
-            in_channels = dec_channels[-1],
-            hidden_channels = dec_channels[-1]*2,
+            in_channels = dec_channels[0],
+            hidden_channels = dec_channels[0]*2,
             out_channels = 4
         ))
 
@@ -1007,12 +1008,10 @@ class PTEncoder(PointModule):
         point = self.enc(point)
 
         if train_decoder:
-            features = self.fc(point)
-            
             point = self.dec(point)
             point = self.decfc(point)
 
-            return features.feat, point.feat
+            return None , point.feat
 
         point = self.fc(point)
-        return point.feat
+        return point.feat , None
