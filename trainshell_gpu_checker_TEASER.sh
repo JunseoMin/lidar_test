@@ -18,10 +18,10 @@ export PATH=/usr/local/cuda-11.8/bin:${PATH}
 export LD_LIBRARY_PATH=/usr/local/cuda-11.8/lib64:${LD_LIBRARY_PATH}
 export OMP_NUM_THREADS=12
 
-# python3 /home/server01/js_ws/lidar_test/train_from_supervised.py --resume-from /home/server01/js_ws/lidar_test/ckpt/supervised_learned.pth
+CUDA_VISIBLE_DEVICES=1 python3 /home/server01/js_ws/lidar_test/train_encoding_TEASER_from_supervised.py --resume-from /home/server01/js_ws/lidar_test/ckpt/TEASER/supervised_learned.pth
 
-PY_CMD="python3 /home/server01/js_ws/lidar_test/train_encoding.py \
---resume-from /home/server01/js_ws/lidar_test/ckpt/vanilla/latest_encoding_logger.pth"
+PY_CMD="env CUDA_VISIBLE_DEVICES=1 python3 /home/server01/js_ws/lidar_test/train_encoding_TEASER.py \
+--resume-from /home/server01/js_ws/lidar_test/ckpt/TEASER/latest_encoding_logger.pth"
 
 function run_and_monitor {
     while true; do

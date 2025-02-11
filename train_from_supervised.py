@@ -28,7 +28,7 @@ def train_encoding(model, train_dataset, gt_dataset, device_train,
     """
     model.to(device_train)
     model.train()
-    print(f"Train self-supervised")
+    # print(f"Train self-supervised")
 
     for epoch in range(start_epoch, num_epochs + 1):
         total_loss = 0.
@@ -55,9 +55,11 @@ def train_encoding(model, train_dataset, gt_dataset, device_train,
                            desc=f"Epoch {epoch}/{num_epochs}")
 
         for train_data, gt_data in data_loader:
+            # ---- [1] 만약 flag < start_flag이면 => skip
             if flag <= start_flag:
                 flag += 1
                 continue
+            # -----------------------------------------
 
             if gt_data is None or gt_data.size(0) == 0:
                 skipped += 1
@@ -105,12 +107,6 @@ def train_encoding(model, train_dataset, gt_dataset, device_train,
                 }, save_path)
                 print(f"Model saved at {save_path}, flag: {flag}, skipped: {skipped}")
 
-            # for name, param in model.named_parameters():
-            #     if torch.isnan(param).any():
-            #         print(f"NaN detected in {name}")
-            #     if torch.isinf(param).any():
-            #         print(f"Inf detected in {name}")
-
         # 에폭 끝
         avg_loss = total_loss / max(1, iteration_count)
         avg_reg = reg_total / max(1, iteration_count)
@@ -123,7 +119,6 @@ def train_encoding(model, train_dataset, gt_dataset, device_train,
         print(f"Min Loss: {min_loss:.4f}, LR: {scheduler.get_last_lr()[0]:.6f}")
         print(f"Epoch {epoch} time: {time.time() - start_time:.2f} seconds")
 
-        # wandb log (생략 가능)
         wandb.log({
                    "train_loss": avg_loss, "epoch": epoch,
                    "learning_rate": scheduler.get_last_lr()[0],
@@ -159,18 +154,6 @@ def train_encoding(model, train_dataset, gt_dataset, device_train,
                 'min_loss': min_loss
             }, save_path)
         print(f"Model saved at {save_path}, skipped: {skipped}")
-        
-        # if epoch == 20:
-        #     save_path = f"/home/server01/js_ws/lidar_test/ckpt/vanilla/supervised_learned.pth"
-        #     torch.save({
-        #             'epoch': epoch,
-        #             'flag': flag,   # ★ flag 저장
-        #             'model_state_dict': model.state_dict(),
-        #             'optimizer_state_dict': optimizer.state_dict(),
-        #             'scheduler_state_dict': scheduler.state_dict(),
-        #             'min_loss': min_loss
-        #         }, save_path)
-        #     print(f"Model saved at {save_path}, skipped: {skipped}")
         
         if epoch == num_epochs:
             save_path = f"/home/server01/js_ws/lidar_test/ckpt/vanilla/final_results.pth"
@@ -221,6 +204,7 @@ model = PTEncoder(
                  dec_num_head=(2, 2, 4, 8, 8, 8),
                  dec_patch_size=(1024, 1024, 1024, 1024, 1024, 1024),
 )
+torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)    # prevent gradiant explosion
 
 train = []; gt = []
 
@@ -244,35 +228,16 @@ criterion = CombinedCriterionAE()
 
 start_flag = 0
 num_epochs = 150
+start_epoch = 1
+min_loss = float('inf')
 
 if args.resume_from:
     ckptr = torch.load(args.resume_from, map_location=device_train)
-        
     model.load_state_dict(ckptr['model_state_dict'])
     model.to(device_train)
-    optimizer.load_state_dict(ckptr['optimizer_state_dict'])
-    scheduler.load_state_dict(ckptr['scheduler_state_dict'])
-    min_loss = ckptr['min_loss']
-
-    start_epoch = ckptr['epoch']
-    start_flag = ckptr['flag']
-        
-    if start_flag == 0 or start_flag == len(train_dataset):  #flag == 0
-        start_epoch += 1
-        start_flag = 0
-
-    if start_epoch == num_epochs:
-        print("---- Train already finished!! ----")
-        sys.exit()
-
-    print(f"Checkpoint loaded. Resuming from epoch {start_epoch}")
-    print(f"min loss {min_loss:.4f}")
-    print(f"start flag {start_flag}")
-    print(f"lr {scheduler.get_last_lr()[0]}")
 else:
-    start_epoch = 1
-    min_loss = float('inf')
-    print(f"Starting training for sequence {seq} from scratch.")
+    print(f"This code olny runs with --args-from param. Abort")
+    sys.exit()
 
 train_encoding(model = model, train_dataset = train_dataset, gt_dataset = gt_dataset, device_train = device_train, scheduler = scheduler, 
                optimizer = optimizer, criterion = criterion, start_epoch=start_epoch, min_loss=min_loss, start_flag = start_flag)

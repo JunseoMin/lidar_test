@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # echo "Running process_point_cloud..."
-# python3 /home/server01/js_ws/lidar_test/dataset/generate_gt_map.py
+python3 /home/server01/js_ws/lidar_test/dataset/generate_gt_map.py
 #generate semantic map
 
 # # save covariance and centroids of clusters
@@ -14,10 +14,10 @@ echo "Running inlier_gt_generator..."
 # 기본 경로 설정
 POSES_PATH="/home/server01/js_ws/dataset/odometry_dataset/dataset/sequences"
 CALIB_BASE="/home/server01/js_ws/dataset/odometry_dataset/dataset/sequences"
-INLIER_CENTROIDS_BASE="/home/server01/js_ws/dataset/encoder_dataset/inlier_map"
-COV_BASE="/home/server01/js_ws/dataset/encoder_dataset/inlier_map"
-GT_MAP_BASE="/home/server01/js_ws/dataset/encoder_dataset/semantic_map"
-OUTPUT_BASE="/home/server01/js_ws/dataset/encoder_dataset/encoder_xyzn"
+INLIER_CENTROIDS_BASE="/home/server01/js_ws/dataset/encoder_dataset_TEASER/inlier_map"
+COV_BASE="/home/server01/js_ws/dataset/encoder_dataset_TEASER/inlier_map"
+GT_MAP_BASE="/home/server01/js_ws/dataset/encoder_dataset_TEASER/semantic_map"
+OUTPUT_BASE="/home/server01/js_ws/dataset/encoder_dataset_TEASER/encoder_xyzn"
 
 # generate GT datset FOR tran
 for i in $(seq -w 0 10); do

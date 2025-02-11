@@ -1008,6 +1008,7 @@ class PTEncoder(PointModule):
         point = self.enc(point)
 
         if train_decoder:
+            # print(point.feat.shape)
             point = self.dec(point)
             point = self.decfc(point)
 

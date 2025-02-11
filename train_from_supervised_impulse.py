@@ -13,7 +13,7 @@ import pyfiglet
 import wandb
 import argparse
 
-from loss.CombinedLossAE import *
+from loss.CombinedLossAE_Impulse_MSE import *
 
 import sys
 
@@ -28,7 +28,7 @@ def train_encoding(model, train_dataset, gt_dataset, device_train,
     """
     model.to(device_train)
     model.train()
-    print(f"Train self-supervised")
+    # print(f"Train self-supervised")
 
     for epoch in range(start_epoch, num_epochs + 1):
         total_loss = 0.
@@ -55,9 +55,11 @@ def train_encoding(model, train_dataset, gt_dataset, device_train,
                            desc=f"Epoch {epoch}/{num_epochs}")
 
         for train_data, gt_data in data_loader:
+            # ---- [1] 만약 flag < start_flag이면 => skip
             if flag <= start_flag:
                 flag += 1
                 continue
+            # -----------------------------------------
 
             if gt_data is None or gt_data.size(0) == 0:
                 skipped += 1
@@ -94,7 +96,7 @@ def train_encoding(model, train_dataset, gt_dataset, device_train,
 
             # 주기적으로 ckpt 저장
             if flag % 3000 == 0:
-                save_path = f"/home/server01/js_ws/lidar_test/ckpt/vanilla/latest_encoding_logger.pth"
+                save_path = f"/home/server01/js_ws/lidar_test/ckpt/latest_encoding_logger.pth"
                 torch.save({
                     'epoch': epoch,
                     'flag': flag,  # ★ flag 저장
@@ -104,12 +106,6 @@ def train_encoding(model, train_dataset, gt_dataset, device_train,
                     'min_loss': min_loss
                 }, save_path)
                 print(f"Model saved at {save_path}, flag: {flag}, skipped: {skipped}")
-
-            # for name, param in model.named_parameters():
-            #     if torch.isnan(param).any():
-            #         print(f"NaN detected in {name}")
-            #     if torch.isinf(param).any():
-            #         print(f"Inf detected in {name}")
 
         # 에폭 끝
         avg_loss = total_loss / max(1, iteration_count)
@@ -123,7 +119,6 @@ def train_encoding(model, train_dataset, gt_dataset, device_train,
         print(f"Min Loss: {min_loss:.4f}, LR: {scheduler.get_last_lr()[0]:.6f}")
         print(f"Epoch {epoch} time: {time.time() - start_time:.2f} seconds")
 
-        # wandb log (생략 가능)
         wandb.log({
                    "train_loss": avg_loss, "epoch": epoch,
                    "learning_rate": scheduler.get_last_lr()[0],
@@ -137,7 +132,7 @@ def train_encoding(model, train_dataset, gt_dataset, device_train,
                 print(f"ERROR: negative loss, skip saving.")
             else:
                 min_loss = avg_loss
-                save_path = f"/home/server01/js_ws/lidar_test/ckpt/vanilla/best_model_encoding.pth"
+                save_path = f"/home/server01/js_ws/lidar_test/ckpt/best_model_encoding.pth"
                 torch.save({
                     'epoch': epoch,
                     'flag': flag,  # ★ flag 저장
@@ -149,7 +144,7 @@ def train_encoding(model, train_dataset, gt_dataset, device_train,
                 print(f"Best model saved at {save_path} with loss: {min_loss:.4f}")
 
         # Save latest every epoch
-        save_path = f"/home/server01/js_ws/lidar_test/ckpt/vanilla/latest_encoding.pth"
+        save_path = f"/home/server01/js_ws/lidar_test/ckpt/latest_encoding.pth"
         torch.save({
                 'epoch': epoch,
                 'flag': flag,  # ★ flag 저장
@@ -160,20 +155,8 @@ def train_encoding(model, train_dataset, gt_dataset, device_train,
             }, save_path)
         print(f"Model saved at {save_path}, skipped: {skipped}")
         
-        # if epoch == 20:
-        #     save_path = f"/home/server01/js_ws/lidar_test/ckpt/vanilla/supervised_learned.pth"
-        #     torch.save({
-        #             'epoch': epoch,
-        #             'flag': flag,   # ★ flag 저장
-        #             'model_state_dict': model.state_dict(),
-        #             'optimizer_state_dict': optimizer.state_dict(),
-        #             'scheduler_state_dict': scheduler.state_dict(),
-        #             'min_loss': min_loss
-        #         }, save_path)
-        #     print(f"Model saved at {save_path}, skipped: {skipped}")
-        
         if epoch == num_epochs:
-            save_path = f"/home/server01/js_ws/lidar_test/ckpt/vanilla/final_results.pth"
+            save_path = f"/home/server01/js_ws/lidar_test/ckpt/final_results.pth"
             torch.save({
                     'epoch': epoch,
                     'flag': flag,   # ★ flag 저장
@@ -192,6 +175,8 @@ def train_encoding(model, train_dataset, gt_dataset, device_train,
 parser = argparse.ArgumentParser()
 parser.add_argument('--resume-from')
 args = parser.parse_args()
+### for debug -- 
+# torch.autograd.set_detect_anomaly(True)
 
 device_train = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -199,7 +184,7 @@ print("training device: ", device_train)
 ascii_art = pyfiglet.figlet_format("LIDAR-CLUSTER-ENCODING")
 print(ascii_art)
 
-wandb.init(project="lidar_encoding_training", name="LiDARENCODING")
+wandb.init(project="lidar_encoding_training", name="LiDARENCODING-IMPULSE")
 
 model = PTEncoder(
                  in_channels = 4,
@@ -222,6 +207,8 @@ model = PTEncoder(
                  dec_patch_size=(1024, 1024, 1024, 1024, 1024, 1024),
 )
 
+torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
+
 train = []; gt = []
 
 train_file_paths = "/home/server01/js_ws/dataset/reconstruction_dataset/reconstruction_input/train/velodyne/"
@@ -234,45 +221,27 @@ for seq in range(2,11): # train for seq 02 to seq 11
 train_dataset = PointCloudDataset(train, device_train, grid_size=0.01)  # 16channel lidar
 gt_dataset = PointCloudGTDataset(gt, device_train)
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-9, betas=(0.9, 0.999), eps=1e-5)
+optimizer = torch.optim.AdamW(model.parameters(), lr=2e-9, betas=(0.9, 0.999), eps=1e-5)
 
-scheduler1 = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[2,3,4,5], gamma=10)
-scheduler2 = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[90,120], gamma=0.5)
+scheduler1 = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[1,2,3,4,5], gamma=10)
+scheduler2 = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[165,190], gamma=0.5)
+
 
 scheduler = ChainedScheduler([scheduler1,scheduler2], optimizer)
-criterion = CombinedCriterionAE()
+criterion = CombinedCriterionAEImpulse()
 
 start_flag = 0
-num_epochs = 150
+num_epochs = 200
+start_epoch = 1
+min_loss = float('inf')
 
 if args.resume_from:
     ckptr = torch.load(args.resume_from, map_location=device_train)
-        
     model.load_state_dict(ckptr['model_state_dict'])
     model.to(device_train)
-    optimizer.load_state_dict(ckptr['optimizer_state_dict'])
-    scheduler.load_state_dict(ckptr['scheduler_state_dict'])
-    min_loss = ckptr['min_loss']
-
-    start_epoch = ckptr['epoch']
-    start_flag = ckptr['flag']
-        
-    if start_flag == 0 or start_flag == len(train_dataset):  #flag == 0
-        start_epoch += 1
-        start_flag = 0
-
-    if start_epoch == num_epochs:
-        print("---- Train already finished!! ----")
-        sys.exit()
-
-    print(f"Checkpoint loaded. Resuming from epoch {start_epoch}")
-    print(f"min loss {min_loss:.4f}")
-    print(f"start flag {start_flag}")
-    print(f"lr {scheduler.get_last_lr()[0]}")
 else:
-    start_epoch = 1
-    min_loss = float('inf')
-    print(f"Starting training for sequence {seq} from scratch.")
+    print(f"This code olny runs with --args-from param. Abort")
+    sys.exit()
 
 train_encoding(model = model, train_dataset = train_dataset, gt_dataset = gt_dataset, device_train = device_train, scheduler = scheduler, 
                optimizer = optimizer, criterion = criterion, start_epoch=start_epoch, min_loss=min_loss, start_flag = start_flag)

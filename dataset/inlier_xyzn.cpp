@@ -300,11 +300,9 @@ int main(int argc, char** argv){
             Eigen::Vector4d c_lidar = T_lm * c_map;
             double dist = c_lidar.head<3>().norm();
             if(dist <= threshold){
-                // transform normal? 
-                // normal = R_lm * n_map (ignore translation).
                 Eigen::Matrix3d R_lm = T_lm.block<3,3>(0,0);
                 Eigen::Vector3d n_map(cc.nx, cc.ny, cc.nz);
-                Eigen::Vector3d n_lidar = R_lm * n_map;
+                Eigen::Vector3d n_lidar = R_lm * n_map; // transform normal
                 n_lidar.normalize();
 
                 // push x,y,z,nx,ny,nz => 6 floats

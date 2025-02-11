@@ -71,9 +71,9 @@ def arg_parse():
     parser = argparse.ArgumentParser(description="Generate voxelized semantic maps from KITTI dataset in chunks.")
     parser.add_argument('--dataset_path', type=str, default="/home/server01/js_ws/dataset/odometry_dataset/dataset/sequences",
                         help="Path to KITTI dataset sequences folder")
-    parser.add_argument('--output_path', type=str, default="/home/server01/js_ws/dataset/encoder_dataset/semantic_map",
+    parser.add_argument('--output_path', type=str, default="/home/server01/js_ws/dataset/encoder_dataset_TEASER/semantic_map",
                         help="Output path for semantic maps.")
-    parser.add_argument('--voxel_size', type=float, default=0.1,
+    parser.add_argument('--voxel_size', type=float, default=0.2,
                         help="Voxel size for down-sampling.")
     parser.add_argument('--chunk_frames', type=int, default=100,
                         help="Number of frames to accumulate before voxelizing.")
@@ -130,6 +130,7 @@ def process_sequence(sequence_id, args):
         points = load_lidar_scan(scan_path)
         semantic_label = load_label(label_path)
 
+        # mask = np.isin(semantic_label, list(target_labels))
         mask = ~np.isin(semantic_label, list(target_labels))
         points = points[mask]
         semantic_label = semantic_label[mask]

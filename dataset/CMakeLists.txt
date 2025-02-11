@@ -22,6 +22,9 @@ add_definitions(${PCL_DEFINITIONS})
 add_executable(inlier_xyzn
     inlier_xyzn.cpp
 )
+add_executable(generate_centroid_xyzn_map
+    generate_centroid_xyzn_map.cpp
+)
 
 # add_executable(downsample_voxel
 #     points_downsample.cpp
@@ -47,6 +50,16 @@ target_link_libraries(inlier_xyzn
     pcl_segmentation
     pcl_search
 )
+
+target_link_libraries(generate_centroid_xyzn_map
+    ${PCL_LIBRARIES}
+    pcl_common
+    pcl_io
+    pcl_kdtree
+    pcl_filters
+    pcl_segmentation
+    pcl_search
+)
 # OpenMP 설정
 # if (OPENMP_FOUND)
 #     target_compile_options(inlier_gt_generator PRIVATE ${OpenMP_CXX_FLAGS})
@@ -55,4 +68,7 @@ target_link_libraries(inlier_xyzn
 if (OPENMP_FOUND)
     target_compile_options(inlier_xyzn PRIVATE ${OpenMP_CXX_FLAGS})
     target_link_libraries(inlier_xyzn OpenMP::OpenMP_CXX)
+
+    target_compile_options(generate_centroid_xyzn_map PRIVATE ${OpenMP_CXX_FLAGS})
+    target_link_libraries(generate_centroid_xyzn_map OpenMP::OpenMP_CXX)
 endif()
