@@ -60,33 +60,34 @@ def train_diffusion(model, train_dataset, gt_dataset, device_train,
         print(f"Min Loss: {min_loss:.4f}, LR: {scheduler.get_last_lr()[0]:.6f}")
         print(f"Epoch {epoch} time: {time.time() - start_time:.2f} seconds")
 
-        wandb.log({"train_loss": avg_loss, "epoch": epoch, "learning_rate": scheduler.get_last_lr()[0]})
 
-        # if not epoch % 10:
-        #     print(f"----- validation start -----")
-        #     val_total_loss = 0.0
-        #     val_samples_count = 0
-        #     model.eval()
-        #     val_criterion = SamplesLoss(loss='sinkhorn', p=2, blur=.001, reach=.2)
+        if not epoch % 30:
+            print(f"----- validation start -----")
+            val_total_loss = 0.0
+            val_samples_count = 0
+            model.eval()
+            val_criterion = SamplesLoss(loss='sinkhorn', p=2, blur=.001, reach=.2)
 
-        #     with torch.no_grad():
-        #        for val_16, gt_val in zip(validation_dataset, validation_dataset_gt):
-        #             if gt_val is None or gt_val.size(0) == 0:
-        #                 continue
+            with torch.no_grad():
+               for val_16, gt_val in zip(validation_dataset, validation_dataset_gt):
+                    if gt_val is None or gt_val.size(0) == 0:
+                        continue
                     
-        #             reconst = model.sample(val_16["feat"].shape[0], val_16, device_train)
-        #             reconst = rearrange(reconst, "b n d -> (b n) d")
-        #             val_loss = val_criterion(reconst, gt_val)
-        #             val_total_loss += val_loss.item()
-        #             val_samples_count += 1
+                    reconst = model.sample(val_16["feat"].shape[0], val_16, device_train)
+                    reconst = rearrange(reconst, "b n d -> (b n) d")
+                    val_loss = val_criterion(reconst, gt_val)
+                    val_total_loss += val_loss.item()
+                    val_samples_count += 1
             
-        #     if val_samples_count > 0:
-        #         avg_val_loss = val_total_loss / val_samples_count
-        #     else:
-        #         avg_val_loss = 0.0
+            if val_samples_count > 0:
+                avg_val_loss = val_total_loss / val_samples_count
+            else:
+                avg_val_loss = 0.0
 
-        #     print(f"[INFO] Validation done. Avg validation loss: {avg_val_loss:.6f}")
-        #     model.train()
+            print(f"[INFO] Validation done. Avg validation loss: {avg_val_loss:.6f}")
+            model.train()
+
+        wandb.log({"train_loss": avg_loss, "epoch": epoch, "learning_rate": scheduler.get_last_lr()[0], "validation_loss":val_loss})
 
         if avg_loss < min_loss:
             if avg_loss < 0:
@@ -194,7 +195,6 @@ if __name__ == '__main__':
     train_dict['train'] = train
     gt_dict['gt'] = gt
 
-    print(train[10], train[20])
     ascii_art = pyfiglet.figlet_format("LIDAR DIFFUSION")
     print(ascii_art)
 
@@ -205,8 +205,8 @@ if __name__ == '__main__':
     validation_dataset = PointCloudDataset(validation, device_train)
     validation_gt_dataset = PointCloudGTDataset(validation_gt, device_train)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=4e-4, weight_decay=1e-3)
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100], gamma=0.5)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=4e-4, weight_decay=1e-2)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[130], gamma=0.5)
 
     if args.resume_from:
         ckptr = torch.load(args.resume_from, map_location=device_train)
@@ -227,7 +227,7 @@ if __name__ == '__main__':
     train_diffusion(model=model, train_dataset=train_dataset, gt_dataset=gt_dataset, optimizer=optimizer,
                      scheduler=scheduler, device_train=device_train, device_validation=device_train,
                      validation_dataset=validation_dataset, validation_dataset_gt=validation_gt_dataset,
-                     min_loss= min_loss, start_epoch=start_epoch, num_epochs=120)
+                     min_loss= min_loss, start_epoch=start_epoch, num_epochs=150)
     
     print(train[10], train[20])
 

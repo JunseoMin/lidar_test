@@ -41,7 +41,7 @@ class CombinedCriterionAEImpulse(nn.Module):
         self.inlier_loss_val = 0.
         self.norm_loss_val = 0.
 
-    def repulsion_loss(self, pred_points, alpha = 10.0, margin=0.3):
+    def repulsion_loss(self, pred_points, alpha = 100.0, margin=0.3):
         """
         Penalize predicted points if they get too close to each other.
         Avoid in-place ops for proper gradient flow.
@@ -101,7 +101,8 @@ class CombinedCriterionAEImpulse(nn.Module):
         gt_points    = gt_data[:, :3].to(device)
         gt_normals   = gt_data[:, 3:].to(device)
         
-        var_loss = self.inlier_loss_var(pred_points, gt_points)
+        # var_loss = self.inlier_loss_var(pred_points, gt_points)
+        var_loss = 0.
         if torch.isnan(pred_normals).any():
             print("Output normal has Nan")
         if torch.isnan(pred_points).any():

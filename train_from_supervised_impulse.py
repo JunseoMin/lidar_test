@@ -207,7 +207,7 @@ model = PTEncoder(
                  dec_patch_size=(1024, 1024, 1024, 1024, 1024, 1024),
 )
 
-torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
+torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
 train = []; gt = []
 
@@ -221,7 +221,7 @@ for seq in range(2,11): # train for seq 02 to seq 11
 train_dataset = PointCloudDataset(train, device_train, grid_size=0.01)  # 16channel lidar
 gt_dataset = PointCloudGTDataset(gt, device_train)
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=2e-9, betas=(0.9, 0.999), eps=1e-5)
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-9, betas=(0.9, 0.999), eps=1e-5)
 
 scheduler1 = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[1,2,3,4,5], gamma=10)
 scheduler2 = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[165,190], gamma=0.5)
